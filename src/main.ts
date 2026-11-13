@@ -5,10 +5,14 @@ import './fonts.css';
 import './generated/design.css';
 import './site.css';
 import { bindings, props as designProps } from './generated/page.js';
+import { ZMAX, ZMIN } from './design';
 import { mountPage, type Binding } from './dom';
-import type { Props } from './frame';
+import { panAt, type Frame, type Props } from './frame';
+import { GL_ATTRIBUTES, isSoftware, rendererOf } from './gpu/attributes';
+import type { Host, Running, Start, StartOptions } from './gpu/host';
 import { Journey } from './journey';
 import { readProps } from './props';
+import { sheets } from './sheets';
 
 declare global {
   interface Window {
@@ -16,8 +20,17 @@ declare global {
     __L?: () => void;
     /** The running journey, for tests and the console. */
     __perspective?: Journey;
+    /** The renderer once it has taken over; null once it is settled that the SVG stays. */
+    __gpu?: Running | null;
   }
 }
+
+/** Where the built renderer files are; filled in by the build (scripts/build.mjs). */
+declare const __GPU_FILES__: { webgl2: string; webgpu: string } | undefined;
+
+/** The zoom is noted here when the page is left, so that ?original can be added or removed without losing one's place. */
+const PLACE = 'perspective';
+const original = /[?&]original(=|&|$)/.test(location.search);
 
 const doc = document.documentElement;
 
@@ -27,15 +40,26 @@ function start(): void {
   const page = mountPage(root, bindings as Binding[]);
   const media = (query: string) => typeof matchMedia === 'function' && matchMedia(query).matches;
   const reduced = media('(prefers-reduced-motion: reduce)');
+  const props = readProps(location.search, designProps as Props);
+  // every frame goes to the page; once the renderer has taken the drawing over, to it as well
+  let frame: Frame | null = null, also: ((f: Frame) => void) | null = null;
   const journey = new Journey(
     {
       raf: (cb) => requestAnimationFrame(cb),
       reduced,
       coarse: media('(pointer: coarse)'),
     },
-    readProps(location.search, designProps as Props),
-    page.apply,
+    props,
+    (f) => { frame = f; page.apply(f); if (also) also(f); },
   );
+  // Arriving from the same place in the other drawing (?original added or removed): start where that one was.
+  try {
+    const was = JSON.parse(sessionStorage.getItem(PLACE) || 'null');
+    if (was && was.o !== original && typeof was.z === 'number') journey.z = journey.zT = Math.min(ZMAX, Math.max(ZMIN, was.z));
+  } catch { /* no storage: start at Moustique */ }
+  window.addEventListener('pagehide', () => {
+    try { sessionStorage.setItem(PLACE, JSON.stringify({ z: journey.z, o: original })); } catch { /* no storage */ }
+  });
 
   const handlers: Record<string, (e: Event, arg?: string) => void> = {
     onWheel: (e) => journey.onWheel(e as WheelEvent),
@@ -109,6 +133,65 @@ function start(): void {
   };
 
   window.__perspective = journey;
+
+  arrive({
+    root, svg: root.querySelector('svg')!, props, reduced, journey, sheets: sheets(),
+    panAt: (z) => panAt(z, props),
+    onFrame: (callback) => { also = callback; },
+    frame: () => frame,
+    mute: page.mute,
+  });
+}
+
+/**
+ * Brings in the renderer, if this device has a graphics chip to run it on: WebGPU where there
+ * is one, WebGL2 otherwise. Nothing is fetched until the whole drawing has arrived and the
+ * page is idle, and nothing at all on a device that stays with the SVG. The SVG is on screen
+ * throughout; the renderer takes over behind it (src/gpu/renderer.ts).
+ *
+ * ?original keeps the SVG, as does ?hand (the pencil line is an SVG filter).
+ * ?gpu=webgl2, ?gpu=webgpu and ?gpu=svg choose outright, software rendering included: for tests.
+ */
+function arrive(host: Host): void {
+  const asked = /[?&]gpu=(\w+)/.exec(location.search);
+  const want = asked ? asked[1] : '';
+  if (original || host.props.handDrawn || want === 'svg') { window.__gpu = null; return; }
+  const load = async (kind: 'webgpu' | 'webgl2', options: StartOptions): Promise<Running | null> => {
+    let renderer: { start: Start };
+    if (import.meta.env.DEV) {
+      renderer = kind === 'webgpu' ? await import('./gpu/entry-webgpu') : await import('./gpu/entry-webgl2');
+    } else {
+      renderer = await import(/* @vite-ignore */ new URL(__GPU_FILES__![kind], document.baseURI).href);
+    }
+    return renderer.start(host, options);
+  };
+  const go = async (): Promise<Running | null> => {
+    // What does this device draw with? WebGL can tell without asking for WebGPU, which logs a
+    // warning where there is none. The canvas is not in the page: next to the SVG it would
+    // change how the browser draws the SVG.
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl2', GL_ATTRIBUTES);
+    if (!want && !(gl && !isSoftware(rendererOf(gl)))) return null;
+    let running: Running | null = null;
+    const gpu = (navigator as Navigator & { gpu?: GPU }).gpu;
+    if (want !== 'webgl2' && gpu) {
+      const adapter = await gpu.requestAdapter().catch(() => null);
+      if (adapter) running = await load('webgpu', { force: !!want, adapter }).catch(() => null);
+    }
+    if (running) {
+      // the WebGL context was only made to find out
+      const ext = gl && gl.getExtension('WEBGL_lose_context');
+      if (ext) ext.loseContext();
+    } else if (gl && want !== 'webgpu') {
+      running = await load('webgl2', { force: !!want, canvas });
+    }
+    return running;
+  };
+  const begin = (): void => {
+    const idle = (): void => { go().catch((e) => { console.info('Perspective: the drawing stays as SVG (' + e + ')'); return null; }).then((running) => { window.__gpu = running; }); };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(idle, { timeout: 2000 }); else setTimeout(idle, 200);
+  };
+  if (document.readyState === 'complete') begin(); else window.addEventListener('load', begin);
 }
 
 function showWords(): void {

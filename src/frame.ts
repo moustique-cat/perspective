@@ -80,6 +80,16 @@ export function cmOf(props: Props): { M: number; cm: number } {
   return { M: cm / 100, cm };
 }
 
+/**
+ * The offset of the whole drawing at a zoom, as numbers: the same arithmetic as `pan` in
+ * computeFrame below, before rounding. The renderer uses it to know which part of a layer
+ * is at the middle of the view at zooms other than the current one.
+ */
+export function panAt(z: number, props: Props): [number, number] {
+  const k = cmOf(props).cm / 46 * (1 - smooth01((-0.25 - z) / 0.6)) * Math.pow(10, -z);
+  return [-201.4 * k, -103.1 * k];
+}
+
 const GONE = { y: '0', o: '0', d: 'none' };
 const GONE_CIRCLE = { cy: '0', r: '0', o: '0', d: 'none' };
 const GONE_LABEL = { x: '0', y: '0', o: '0', d: 'none' };

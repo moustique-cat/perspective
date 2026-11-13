@@ -20,7 +20,9 @@
 <script id="first-paint">
 // Fits the drawing to this window and shows it, without waiting for the main script below.
 // Same arithmetic as computeFrame() in src/frame.ts; tests/first-paint.test.ts keeps them equal.
-(function(w,h,q){if(/[?&](cm|hand)(=|&|$)/.test(q))return;var k=w>=760&&h>=560,s=Math.max(w/1280,h/820),x=(w-(k?248:0))/2,y=(k?.36:.3)*h;document.querySelector('.ink>svg').setAttribute('viewBox',(-x/s-(1280-w/s)/2).toFixed(2)+' '+(-y/s-(820-h/s)/2).toFixed(2)+' 1280 820');document.documentElement.className='ready'})(innerWidth,innerHeight,location.search)
+// It stands back when the main script will start somewhere other than this first view: with
+// ?cm or ?hand, or on arriving from the other drawing (?original added or removed) at its zoom.
+(function(w,h,q){if(/[?&](cm|hand)(=|&|$)/.test(q))return;try{var p=JSON.parse(sessionStorage.getItem('perspective'));if(p&&p.o!=/[?&]original(=|&|$)/.test(q))return}catch(e){}var k=w>=760&&h>=560,s=Math.max(w/1280,h/820),x=(w-(k?248:0))/2,y=(k?.36:.3)*h;document.querySelector('.ink>svg').setAttribute('viewBox',(-x/s-(1280-w/s)/2).toFixed(2)+' '+(-y/s-(820-h/s)/2).toFixed(2)+' 1280 820');document.documentElement.className='ready'})(innerWidth,innerHeight,location.search)
 </script>
 <!--app-->
 <script type="module" src="/src/main.ts"></script>
