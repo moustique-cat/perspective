@@ -11,6 +11,7 @@
 //    redistributes it between neighbouring pixels; that is what is allowed, and only rarely.
 //    A real difference (a stroke width, a colour, a missing mark) changes the amount of ink.
 import type { Page, TestInfo } from '@playwright/test';
+import fs from 'node:fs';
 import { PNG } from 'pngjs';
 
 export interface PixelDelta {
@@ -21,24 +22,36 @@ export interface PixelDelta {
   /** Total darkness of each picture (sum of 255 - red over all pixels). */
   inkA: number;
   inkB: number;
+  /** Where the differing pixels are: left, top, right, bottom. */
+  box: [number, number, number, number] | null;
   picture: Buffer | null;
 }
 
 export function pixelDelta(a: Buffer, b: Buffer): PixelDelta {
-  if (a.equals(b)) return { differing: 0, worst: 0, inkA: 0, inkB: 0, picture: null };
+  if (a.equals(b)) return { differing: 0, worst: 0, inkA: 0, inkB: 0, box: null, picture: null };
   const pa = PNG.sync.read(a), pb = PNG.sync.read(b);
-  if (pa.width !== pb.width || pa.height !== pb.height) return { differing: pa.width * pa.height, worst: 255, inkA: 0, inkB: 1, picture: null };
+  if (pa.width !== pb.width || pa.height !== pb.height) return { differing: pa.width * pa.height, worst: 255, inkA: 0, inkB: 1, box: null, picture: null };
   const out = new PNG({ width: pa.width, height: pa.height });
   let differing = 0, worst = 0, inkA = 0, inkB = 0;
+  const box: [number, number, number, number] = [pa.width, pa.height, -1, -1];
   for (let i = 0; i < pa.data.length; i += 4) {
     const d = Math.max(Math.abs(pa.data[i] - pb.data[i]), Math.abs(pa.data[i + 1] - pb.data[i + 1]), Math.abs(pa.data[i + 2] - pb.data[i + 2]), Math.abs(pa.data[i + 3] - pb.data[i + 3]));
-    if (d) differing++;
+    if (d) {
+      differing++;
+      const x = (i / 4) % pa.width, y = Math.floor(i / 4 / pa.width);
+      if (x < box[0]) box[0] = x;
+      if (y < box[1]) box[1] = y;
+      if (x > box[2]) box[2] = x;
+      if (y > box[3]) box[3] = y;
+    }
     if (d > worst) worst = d;
     inkA += 255 - pa.data[i];
     inkB += 255 - pb.data[i];
-    out.data[i] = 255; out.data[i + 1] = d ? 0 : 255; out.data[i + 2] = d ? 0 : 255; out.data[i + 3] = 255;
+    // the original, faded, with every differing pixel in red
+    const grey = 255 - Math.round((255 - pa.data[i]) / 3);
+    out.data[i] = d ? 255 : grey; out.data[i + 1] = d ? 0 : grey; out.data[i + 2] = d ? 0 : grey; out.data[i + 3] = 255;
   }
-  return { differing, worst, inkA, inkB, picture: differing ? PNG.sync.write(out) : null };
+  return { differing, worst, inkA, inkB, box: differing ? box : null, picture: differing ? PNG.sync.write(out) : null };
 }
 
 /** The most a compositing difference has been seen to move a pixel, with a little headroom. */
@@ -161,14 +174,15 @@ export async function compareAcross(reference: Page, site: Page, zooms: number[]
     const [a, b] = [await reference.screenshot(), await site.screenshot()];
     const delta = pixelDelta(a, b);
     if (delta.differing === 0) { result.identical++; continue; }
-    const note = `z = ${z}: ${delta.differing} px differ by up to ${delta.worst} levels; ink ${delta.inkA} vs ${delta.inkB}`;
+    const note = `z = ${z}: ${delta.differing} px differ by up to ${delta.worst} levels, within x ${delta.box![0]}..${delta.box![2]}, y ${delta.box![1]}..${delta.box![3]}; ink ${delta.inkA} vs ${delta.inkB}`;
+    // keep the pictures of anything that is not bit-identical (CI uploads them when a test fails)
+    if (result.soft.length + result.pixels.length < 4) {
+      fs.writeFileSync(info.outputPath(`z${z}-original.png`), a);
+      fs.writeFileSync(info.outputPath(`z${z}-site.png`), b);
+      if (delta.picture) fs.writeFileSync(info.outputPath(`z${z}-difference.png`), delta.picture);
+    }
     if (sameInk(delta)) { result.soft.push(note); continue; }
     result.pixels.push(note);
-    if (result.pixels.length <= 4) {
-      await info.attach(`z${z}-original.png`, { body: a, contentType: 'image/png' });
-      await info.attach(`z${z}-site.png`, { body: b, contentType: 'image/png' });
-      if (delta.picture) await info.attach(`z${z}-difference.png`, { body: delta.picture, contentType: 'image/png' });
-    }
   }
   return result;
 }
