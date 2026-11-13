@@ -46,7 +46,10 @@ interface Placed { shown: boolean; scale: number; x: number; y: number; opacity:
 
 const HIDDEN: Placed = { shown: false, scale: 1, x: 0, y: 0, opacity: 0 };
 
-export async function run(host: Host, backend: Backend, makeWorker: (() => Worker) | null, fault: StartOptions['fault'] = undefined): Promise<Running | null> {
+/**
+ * `rehearse` is false where there is no chip to warm up: a test that asked for the renderer in software.
+ */
+export async function run(host: Host, backend: Backend, makeWorker: (() => Worker) | null, fault: StartOptions['fault'] = undefined, rehearse = true): Promise<Running | null> {
   const wider = (fault && fault.wider) || 1, moved = (fault && fault.moved) || 0;
   let scene: PageScene;
   try {
@@ -476,7 +479,7 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
   // where it is in mid-fade. Whatever a driver leaves until a program is first used, and the pictures
   // that fading layers are drawn into, are then made now and not in the middle of the first flight.
   const rehearsal = new Set<number>();
-  for (const sheet of sheets) for (const z of [sheet.info.from + 0.05, sheet.info.to - 0.05]) if (z > -90 && z < 90) rehearsal.add(Number(z.toFixed(2)));
+  if (rehearse) for (const sheet of sheets) for (const z of [sheet.info.from + 0.05, sheet.info.to - 0.05]) if (z > -90 && z < 90) rehearsal.add(Number(z.toFixed(2)));
   for (const z of rehearsal) {
     if (stopped) return null;
     build(host.frameAt(z));

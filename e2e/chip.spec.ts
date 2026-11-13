@@ -21,8 +21,19 @@ const ways: [string, LaunchOptions][] = [
   ['in a window', { ...onChip, headless: false }],
 ];
 
-async function launch(options: LaunchOptions): Promise<Browser | null> {
-  try { return await chromium.launch({ timeout: 30_000, ...options }); } catch { return null; }
+/**
+ * A browser launched this way, if it launches at all and draws with a graphics chip.
+ * Otherwise null, and the reason: a machine without a chip (a CI runner) skips these tests.
+ */
+async function launch(options: LaunchOptions, baseURL: string | undefined): Promise<{ browser: Browser | null; why: string }> {
+  let browser: Browser;
+  try { browser = await chromium.launch({ timeout: 30_000, ...options }); } catch { return { browser: null, why: 'this way of launching is not available here' }; }
+  const page = await browser.newPage({ baseURL });
+  await page.goto('/fonts/OFL-Inter.txt');
+  const drawsWith = await page.evaluate(() => { const gl = document.createElement('canvas').getContext('webgl2'); const e = gl && gl.getExtension('WEBGL_debug_renderer_info'); return gl && e ? String(gl.getParameter(e.UNMASKED_RENDERER_WEBGL)) : 'no WebGL2'; });
+  await page.close();
+  if (/swiftshader|llvmpipe|software|no WebGL2/i.test(drawsWith)) { await browser.close(); return { browser: null, why: 'no graphics chip here: ' + drawsWith }; }
+  return { browser, why: '' };
 }
 
 /** One fixed step of zoom per frame from proton to edge; the time between frames, and the most marks in a frame. */
@@ -49,17 +60,16 @@ function spread(frames: number[]): string {
 for (const [name, options] of ways) {
   test(`on the chip, ${name}: the site brings in the renderer by itself, and flies`, async ({ baseURL }, info) => {
     test.setTimeout(240_000);
-    const browser = await launch(options);
-    test.skip(!browser, 'this way of launching is not available here');
+    const { browser, why } = await launch(options, baseURL);
+    test.skip(!browser, why);
     const context = await browser!.newContext({ baseURL, viewport: { width: 1280, height: 820 }, deviceScaleFactor: 2, reducedMotion: 'no-preference' });
     for (const [label, query] of [['SVG', '?original'], ['WebGL2', '?gpu=webgl2'], ['WebGPU', '?gpu=webgpu'], ['as the site chooses', '']] as const) {
       const page = await context.newPage();
       const running = await openRenderer(page, query);
-      if (label === 'as the site chooses') {
-        const drawsWith = await page.evaluate(() => { const gl = document.createElement('canvas').getContext('webgl2'); const e = gl && gl.getExtension('WEBGL_debug_renderer_info'); return gl && e ? String(gl.getParameter(e.UNMASKED_RENDERER_WEBGL)) : 'none'; });
-        if (/swiftshader|llvmpipe|software/i.test(drawsWith)) { await browser!.close(); test.skip(true, 'no graphics chip here: ' + drawsWith); }
-        expect(running, 'with a chip, the site takes the renderer by itself').not.toBeNull();
-      }
+      if (label === 'as the site chooses') expect(running, 'with a chip, the site takes the renderer by itself').not.toBeNull();
+      // WebGPU is not in every browser that has a chip to draw with: there the site falls back to WebGL2
+      if (label === 'WebGPU' && !running) { console.log(`  ${name}, WebGPU: not available in this browser`); await page.close(); continue; }
+      if (label === 'WebGL2') expect(running, 'WebGL2 on a chip').not.toBeNull();
       await page.waitForTimeout(600);
       const result = await flight(page, 0.05);
       const line = `${name}, ${label}${running ? ` (${running.kind} on ${running.chip})` : ''}: ${spread(result.frames)}${running ? `; most marks in a frame ${result.marks}, most draws ${result.draws}` : ''}`;
@@ -73,14 +83,14 @@ for (const [name, options] of ways) {
 
 test('on the chip: the renderer next to the SVG as the chip draws it', async ({ baseURL }, info) => {
   test.setTimeout(240_000);
-  const browser = await launch(onChip);
-  test.skip(!browser, 'this way of launching is not available here');
+  const { browser, why } = await launch(onChip, baseURL);
+  test.skip(!browser, why);
   for (const scale of [1, 2]) {
     const context = await browser!.newContext({ baseURL, viewport: { width: 1280, height: 820 }, deviceScaleFactor: scale, reducedMotion: 'reduce' });
     const svg = await context.newPage(), gpu = await context.newPage();
     await openSvg(svg);
     const running = await openRenderer(gpu, '?gpu=webgl2');
-    if (!running || /swiftshader|llvmpipe|software/i.test(running.chip)) { await browser!.close(); test.skip(true, 'no graphics chip here'); }
+    expect(running, 'the renderer did not take over').not.toBeNull();
     const lines: string[] = [];
     for (const stop of LMS as { name: string; z: number }[]) {
       await Promise.all([setZoom(svg, stop.z), setZoom(gpu, stop.z)]);
@@ -99,13 +109,14 @@ test('on the chip: the renderer next to the SVG as the chip draws it', async ({ 
 });
 
 test('on the chip: what reaches the screen is what the chip drew, with either backend', async ({ baseURL }) => {
-  const browser = await launch(onChip);
-  test.skip(!browser, 'this way of launching is not available here');
+  const { browser, why } = await launch(onChip, baseURL);
+  test.skip(!browser, why);
   const context = await browser!.newContext({ baseURL, viewport: { width: 1280, height: 820 }, deviceScaleFactor: 2, reducedMotion: 'reduce' });
   for (const backend of ['webgl2', 'webgpu']) {
     const page = await context.newPage();
     const running = await openRenderer(page, '?gpu=' + backend);
-    if (!running || /swiftshader|llvmpipe|software/i.test(running.chip)) { await browser!.close(); test.skip(true, 'no graphics chip here'); }
+    if (backend === 'webgpu' && !running) { console.log('  webgpu: not available in this browser'); await page.close(); continue; }
+    expect(running, 'the renderer did not take over').not.toBeNull();
     expect(running!.kind).toBe(backend);
     await page.evaluate(() => window.__gpu!.handed);
     await page.addStyleTag({ content: '.hdr,.rail,.bl,.ink>canvas~svg{display:none !important}' });
@@ -124,13 +135,13 @@ test('on the chip: what reaches the screen is what the chip drew, with either ba
 
 test('on the chip: before and after at every stop on the rail', async ({ baseURL }, info) => {
   test.setTimeout(240_000);
-  const browser = await launch(onChip);
-  test.skip(!browser, 'this way of launching is not available here');
+  const { browser, why } = await launch(onChip, baseURL);
+  test.skip(!browser, why);
   const context = await browser!.newContext({ baseURL, viewport: { width: 1280, height: 820 }, deviceScaleFactor: 2, reducedMotion: 'reduce' });
   const before = await context.newPage(), after = await context.newPage();
   await openRenderer(before, '?original');
   const running = await openRenderer(after, '');
-  if (!running || /swiftshader|llvmpipe|software/i.test(running.chip)) { await browser!.close(); test.skip(true, 'no graphics chip here'); }
+  expect(running, 'the renderer did not take over').not.toBeNull();
   await after.evaluate(() => window.__gpu!.handed);
   for (const page of [before, after]) await page.evaluate(() => new Promise<void>((done) => { const check = () => (document.documentElement.classList.contains('fonts') ? done() : setTimeout(check, 10)); check(); }));
   const stops = LMS as { name: string; z: number }[];
