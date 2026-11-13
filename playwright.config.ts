@@ -30,7 +30,7 @@ export default defineConfig({
     {
       // The renderer against the SVG, also in software: the renderer is asked for by address.
       name: 'renderer',
-      testMatch: /renderer\.spec\.ts/,
+      testMatch: /(renderer|widths)\.spec\.ts/,
       use: { launchOptions: { args: [...SOFTWARE, '--enable-unsafe-webgpu', '--use-webgpu-adapter=swiftshader'] } },
     },
     {

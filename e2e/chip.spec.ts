@@ -43,16 +43,16 @@ async function flight(page: Page, step: number): Promise<{ frames: number[]; mar
 }
 function spread(frames: number[]): string {
   const f = [...frames].sort((a, b) => a - b), q = (p: number) => f[Math.min(f.length - 1, Math.floor(p * f.length))];
-  return `${f.length} frames: median ${q(0.5).toFixed(1)} ms, 95th ${q(0.95).toFixed(1)}, 99th ${q(0.99).toFixed(1)}, worst ${f[f.length - 1].toFixed(1)}; over 17.5 ms: ${(100 * f.filter((x) => x > 17.5).length / f.length).toFixed(1)} %, over 50 ms: ${f.filter((x) => x > 50).length}`;
+  return `${f.length} frames: median ${q(0.5).toFixed(1)} ms, 95th ${q(0.95).toFixed(1)}, 99th ${q(0.99).toFixed(1)}, worst ${f[f.length - 1].toFixed(1)}; over 25 ms: ${(100 * f.filter((x) => x > 25).length / f.length).toFixed(1)} %, over 50 ms: ${f.filter((x) => x > 50).length}`;
 }
 
 for (const [name, options] of ways) {
-  test(`on the chip, ${name}: the site brings in the renderer by itself, and flies`, async ({ baseURL }) => {
+  test(`on the chip, ${name}: the site brings in the renderer by itself, and flies`, async ({ baseURL }, info) => {
     test.setTimeout(240_000);
     const browser = await launch(options);
     test.skip(!browser, 'this way of launching is not available here');
     const context = await browser!.newContext({ baseURL, viewport: { width: 1280, height: 820 }, deviceScaleFactor: 2, reducedMotion: 'no-preference' });
-    for (const [label, query] of [['SVG', '?original'], ['WebGL2', '?gpu=webgl2'], ['as the site chooses', '']] as const) {
+    for (const [label, query] of [['SVG', '?original'], ['WebGL2', '?gpu=webgl2'], ['WebGPU', '?gpu=webgpu'], ['as the site chooses', '']] as const) {
       const page = await context.newPage();
       const running = await openRenderer(page, query);
       if (label === 'as the site chooses') {
@@ -62,7 +62,9 @@ for (const [name, options] of ways) {
       }
       await page.waitForTimeout(600);
       const result = await flight(page, 0.05);
-      console.log(`  ${name}, ${label}${running ? ` (${running.kind} on ${running.chip})` : ''}: ${spread(result.frames)}${running ? `; most marks in a frame ${result.marks}, most draws ${result.draws}` : ''}`);
+      const line = `${name}, ${label}${running ? ` (${running.kind} on ${running.chip})` : ''}: ${spread(result.frames)}${running ? `; most marks in a frame ${result.marks}, most draws ${result.draws}` : ''}`;
+      fs.appendFileSync(info.outputPath('flights.md'), line + '\n');
+      console.log('  ' + line);
       await page.close();
     }
     await browser!.close();
@@ -84,12 +86,66 @@ test('on the chip: the renderer next to the SVG as the chip draws it', async ({ 
       await Promise.all([setZoom(svg, stop.z), setZoom(gpu, stop.z)]);
       const a = PNG.sync.read(await svg.screenshot()), b = await rendered(gpu);
       // and the renderer as the page shows it, not as read back: the same thing, if the canvas reaches the screen untouched
-      const m = measure(a, b);
+      const m = measure(a, b, scale);
       lines.push(`| ${stop.name} | ${stop.z} | ${m.inkSvg.toFixed(0)} | ${(100 * (m.inkGpu / m.inkSvg - 1)).toFixed(1)} % | ${percent(m.over32, m.inked)} | ${percent(m.over64, m.inked)} | ${m.worst} | ${percent(m.soft.over16, m.inked)} | ${m.soft.worst.toFixed(0)} |`);
       if (stop.z === 0 || stop.z === 16.4) fs.writeFileSync(info.outputPath(`chip-${scale}x-z${stop.z}-svg.png`), PNG.sync.write(a));
     }
-    console.log(`\n  ${running!.kind} on ${running!.chip}, 1280 x 820 at ${scale}x, against the SVG drawn by the same chip\n  | stop | zoom | ink (px) | ink vs SVG | > 32 levels | > 64 | worst | 3x3 avg > 16 | 3x3 worst |\n  |---|---|---|---|---|---|---|---|---|\n  ` + lines.join('\n  '));
+    const table = `${running!.kind} on ${running!.chip}, 1280 x 820 at ${scale}x, against the SVG drawn by the same chip\n| stop | zoom | ink (px) | ink vs SVG | > 32 levels | > 64 | worst | 3x3 avg > 16 | 3x3 worst |\n|---|---|---|---|---|---|---|---|---|\n` + lines.join('\n');
+    fs.writeFileSync(info.outputPath(`table-${scale}x.md`), table + '\n');
+    console.log('\n  ' + table.replace(/\n/g, '\n  '));
     await context.close();
   }
+  await browser!.close();
+});
+
+test('on the chip: what reaches the screen is what the chip drew, with either backend', async ({ baseURL }) => {
+  const browser = await launch(onChip);
+  test.skip(!browser, 'this way of launching is not available here');
+  const context = await browser!.newContext({ baseURL, viewport: { width: 1280, height: 820 }, deviceScaleFactor: 2, reducedMotion: 'reduce' });
+  for (const backend of ['webgl2', 'webgpu']) {
+    const page = await context.newPage();
+    const running = await openRenderer(page, '?gpu=' + backend);
+    if (!running || /swiftshader|llvmpipe|software/i.test(running.chip)) { await browser!.close(); test.skip(true, 'no graphics chip here'); }
+    expect(running!.kind).toBe(backend);
+    await page.evaluate(() => window.__gpu!.handed);
+    await page.addStyleTag({ content: '.hdr,.rail,.bl,.ink>canvas~svg{display:none !important}' });
+    for (const z of [0, 13.2, -4.3]) {
+      await setZoom(page, z);
+      const drawn = await rendered(page);
+      await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+      const m = measure(PNG.sync.read(await page.screenshot()), drawn);
+      console.log(`  ${running!.kind} on ${running!.chip}, zoom ${z}: the screen differs from what was drawn by at most ${m.worst} of 255 levels`);
+      expect(m.worst).toBeLessThanOrEqual(1);
+    }
+    await page.close();
+  }
+  await browser!.close();
+});
+
+test('on the chip: before and after at every stop on the rail', async ({ baseURL }, info) => {
+  test.setTimeout(240_000);
+  const browser = await launch(onChip);
+  test.skip(!browser, 'this way of launching is not available here');
+  const context = await browser!.newContext({ baseURL, viewport: { width: 1280, height: 820 }, deviceScaleFactor: 2, reducedMotion: 'reduce' });
+  const before = await context.newPage(), after = await context.newPage();
+  await openRenderer(before, '?original');
+  const running = await openRenderer(after, '');
+  if (!running || /swiftshader|llvmpipe|software/i.test(running.chip)) { await browser!.close(); test.skip(true, 'no graphics chip here'); }
+  await after.evaluate(() => window.__gpu!.handed);
+  for (const page of [before, after]) await page.evaluate(() => new Promise<void>((done) => { const check = () => (document.documentElement.classList.contains('fonts') ? done() : setTimeout(check, 10)); check(); }));
+  const stops = LMS as { name: string; z: number }[];
+  fs.mkdirSync(info.outputPath('shots'), { recursive: true });
+  for (let i = 0; i < stops.length; i++) {
+    const name = String(i + 1).padStart(2, '0') + '-' + stops[i].name.toLowerCase().replace(/[^a-z]+/g, '-').replace(/^-|-$/g, '');
+    // each stop as the site shows it on arriving there: by its landmark on the rail
+    for (const [page, which] of [[before, 'before'], [after, 'after']] as const) {
+      await page.evaluate((index) => window.__perspective!.pick(index), i);
+      if (which === 'after') await page.evaluate(() => window.__gpu!.settled());
+      await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+      await page.waitForTimeout(120);
+      fs.writeFileSync(info.outputPath('shots', `${name}-${which}.png`), await page.screenshot());
+    }
+  }
+  console.log(`  ${stops.length} stops photographed before (the SVG) and after (${running!.kind} on ${running!.chip}), 1280 x 820 at 2x: ${info.outputPath('shots')}`);
   await browser!.close();
 });
