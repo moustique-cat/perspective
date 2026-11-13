@@ -88,7 +88,8 @@ async function loading(browser, label, net) {
     requestAnimationFrame(poll);
   });
   await page.goto(ORIGIN + '/', { waitUntil: 'load' });
-  await page.waitForFunction(() => window.__marks.complete !== undefined && window.__marks.words !== undefined, null, { timeout: 120000 });
+  // the paint entry is reported a moment after the paint itself: on a fast load, wait for it too
+  await page.waitForFunction(() => window.__marks.complete !== undefined && window.__marks.words !== undefined && window.__marks.paint !== undefined, null, { timeout: 120000 });
   const m = await page.evaluate(() => window.__marks);
   await context.close();
   const s = (v) => (v / 1000).toFixed(2).padStart(5) + ' s';
