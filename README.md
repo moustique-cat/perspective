@@ -9,5 +9,7 @@ meow meow meow
   Free for personal, educational and other noncommercial use. No commercial use.
 - **Artwork and writing**: the drawings (including their SVG path data,
   wherever it is stored), the Moustique character, and all captions and
-  on-screen text. **All rights reserved.** These are not covered by the code
-  licence and may not be reused in any form without written permission.
+  on-screen text are licensed under
+  [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/):
+  free to share and adapt for non-commercial purposes, with credit to
+  "Moustique". No commercial use.
