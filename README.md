@@ -10,31 +10,35 @@ read out of that file on every build, and the tests hold the site to it.
 
 ### Setting up on macOS or Linux
 
-You need Git and Node.js 22.12 or newer (`node --version` shows what you have).
+Node.js comes from [fnm](https://github.com/Schniz/fnm), which installs the exact version pinned in
+`.nvmrc`, the one the tests run on. Do not install Node.js itself from Homebrew or a system package.
 
-On macOS, with [Homebrew](https://brew.sh):
-
-```bash
-brew install node
-```
-
-On Linux, with [nvm](https://github.com/nvm-sh/nvm):
+macOS, with [Homebrew](https://brew.sh):
 
 ```bash
-sudo apt install -y git curl   # Debian or Ubuntu; elsewhere, your own package manager
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.41.0/install.sh | bash
-# open a new terminal, then:
-nvm install 22
+brew install git fnm
+echo 'eval "$(fnm env --use-on-cd --shell zsh)"' >> ~/.zshrc
 ```
 
-Then, on both:
+Linux (Debian or Ubuntu; elsewhere, your own package manager for the first line):
+
+```bash
+sudo apt install -y git curl unzip
+curl -fsSL https://fnm.vercel.app/install | bash
+```
+
+Then, in a new terminal, on both:
 
 ```bash
 git clone https://github.com/moustique-cat/perspective.git
 cd perspective
-npm ci        # install the build and test tools into the project folder
-npm run dev   # start the site, then open the address it prints
+fnm use --install-if-missing   # install and select the pinned Node.js (if fnm asks first, answer y)
+npm ci --include=dev           # exactly the versions in package-lock.json
+npm run dev                    # start the site, then open the address it prints
 ```
+
+After a `git pull`, run the `fnm` and `npm ci` lines again. Use `npm ci`, not `npm install`, which can
+rewrite the lockfile, and never `sudo` or `-g` with npm: the tools run from the project with `npx`.
 
 ### The other commands
 
