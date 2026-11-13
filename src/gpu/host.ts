@@ -28,6 +28,8 @@ export interface Host {
   onFrame(callback: ((frame: Frame) => void) | null): void;
   /** The frame on the page now. */
   frame(): Frame | null;
+  /** What the frame would be at another zoom, everything else as it is. */
+  frameAt(z: number): Frame;
   /** Stops writing values into the page under this element (null: resume everywhere). */
   mute(element: Element | null): void;
 }
@@ -42,6 +44,12 @@ export interface StartOptions {
   canvas?: HTMLCanvasElement;
   /** The WebGPU adapter the page already asked for. */
   adapter?: unknown;
+  /**
+   * Departures from the design, on purpose. For the tests that check the comparison with the
+   * SVG can tell: every stroke wider by a factor, or the whole picture moved by a fraction of
+   * a pixel. For the speed report: this many extra marks on screen at every zoom.
+   */
+  fault?: { wider?: number; moved?: number; extra?: number };
 }
 
 export interface Running {
@@ -53,6 +61,8 @@ export interface Running {
   snapshot(): Promise<string>;
   /** Resolves when no level is being waited for at the current zoom. */
   settled(): Promise<void>;
+  /** Resolves when every level of every layer has been built: nothing is left to arrive. */
+  idle(): Promise<void>;
   /** Resolves when the SVG drawing has been put away and the picture on screen is the renderer's alone. */
   handed: Promise<void>;
   /** Resolves if the chip is taken away: the renderer has then put the SVG drawing back and is gone. */

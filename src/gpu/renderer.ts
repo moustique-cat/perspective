@@ -5,7 +5,7 @@
 // one offset, and for each batch of marks how many are on screen. No mark is touched.
 import type { Frame } from '../frame';
 import { C_CIRCLE, C_FILL, C_MARKS, C_OVER, type Backend, type Box, type Command, type FramePlan, type Placement, type Uploaded } from './backend';
-import type { Host, Running, SheetInfo } from './host';
+import type { Host, Running, SheetInfo, StartOptions } from './host';
 import { levelBuilder, type Reply, type Request } from './levels';
 import { ATMOSPHERE, EARTH, readPage, type PageScene } from './page';
 import { B_FILL, B_INK, fadesInPlace, within, type Level } from './scene';
@@ -19,6 +19,8 @@ const IN_FLIGHT = 2;
 /** Every third level is built before the renderer takes over, so there is always one close enough to fall back on. */
 const ANCHOR_EVERY = 3;
 const FADE_MS = 260;
+/** The name of the load test's sheet (see below). */
+const EXTRA = 'extra';
 
 interface Slot {
   e: number;
@@ -44,7 +46,8 @@ interface Placed { shown: boolean; scale: number; x: number; y: number; opacity:
 
 const HIDDEN: Placed = { shown: false, scale: 1, x: 0, y: 0, opacity: 0 };
 
-export async function run(host: Host, backend: Backend, makeWorker: (() => Worker) | null): Promise<Running | null> {
+export async function run(host: Host, backend: Backend, makeWorker: (() => Worker) | null, fault: StartOptions['fault'] = undefined): Promise<Running | null> {
+  const wider = (fault && fault.wider) || 1, moved = (fault && fault.moved) || 0;
   let scene: PageScene;
   try {
     scene = readPage(host.svg);
@@ -54,13 +57,43 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
     return null;
   }
   const canvas = backend.canvas;
+  const info0: Record<string, SheetInfo> = host.sheets;
+  if (fault && fault.extra) {
+    // The speed report's load test: marks that are not in the design, scattered over the window and
+    // on screen at every zoom, half of them dots and half short strokes. Milestone 3 will draw
+    // real detail in these numbers; this shows what the device makes of it.
+    let seed = 20261113;
+    const random = (): number => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    let dots = '', strokes = '';
+    for (let i = 0; i < fault.extra; i += 2) {
+      dots += `M${(random() * DESIGN_W).toFixed(1)} ${(random() * DESIGN_H).toFixed(1)}h0`;
+      const x = random() * DESIGN_W, y = random() * DESIGN_H, a = random() * 6.2832;
+      strokes += `M${x.toFixed(1)} ${y.toFixed(1)}L${(x + 6 * Math.cos(a)).toFixed(1)} ${(y + 6 * Math.sin(a)).toFixed(1)}`;
+    }
+    const mark = (d: string, width: number) => ({ d, circle: null, matrix: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number], width, opacity: 1, dash: null, fill: 0 as const });
+    scene.order.push(scene.sheets.length);
+    // the design's small dot and its main line weight
+    const has = (w: number): number => (scene.widths.includes(w) ? w : scene.widths[0]);
+    scene.sheets.push({ name: EXTRA, elements: [mark(dots, has(1.4)), mark(strokes, has(1.25))] });
+    info0[EXTRA] = { from: -99, to: 99, scale: () => 1 };
+  }
   const sheets: Sheet[] = scene.sheets.map((raw, index) => {
-    const info = host.sheets[raw.name];
+    const info = info0[raw.name];
     if (!info) throw new Error('no placement known for ' + raw.name);
     return { name: raw.name, index, info, slots: new Map(), box: null, single: raw.name === 'ground' };
   });
   const stats = { marks: 0, calls: 0, groups: 0, levels: 0, bytes: 0 };
   let stopped = false, took = false;
+  let worker: Worker | null = null;
+  /** Gives up. Before the takeover there is nothing to put back; after it, this becomes the full retreat. */
+  let halt = (): void => {
+    if (stopped) return;
+    stopped = true;
+    if (worker) worker.terminate();
+    backend.destroy();
+  };
+  // a chip taken away before the renderer has shown anything: the SVG simply stays
+  backend.onLost(() => halt());
 
   // ---- levels: asked of the worker nearest the traveller first
   let post: (request: Request) => void;
@@ -83,7 +116,10 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
       if (reply.box) sheet.box = reply.box;
       if (took && shownNow(sheet)) redraw();
     } else if (reply.error) {
-      console.warn('Perspective: ' + hit.sheet.name + ': ' + reply.error);
+      // a layer that cannot be turned into marks: step aside for the SVG, which draws it all
+      console.info('Perspective: the drawing stays as SVG (' + hit.sheet.name + ': ' + reply.error + ')');
+      halt();
+      return;
     }
     pump();
     const told = onReply;
@@ -103,7 +139,6 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
     };
     post = (request) => { queue.push(request); if (!busy) { busy = true; setTimeout(step, 0); } };
   };
-  let worker: Worker | null = null;
   if (makeWorker) {
     try {
       worker = makeWorker();
@@ -131,15 +166,27 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
 
   // ---- the window
   let W = 0, H = 0, dpr = 1, sc = 1, offX = 0, offY = 0;
+  /** The picture's size in device pixels. */
+  let DW = 0, DH = 0;
+  /**
+   * The canvas's size in device pixels as the browser lays it out, where it can say. At a
+   * fractional pixel ratio (a Windows display at 125 %) rounding the CSS size is not always
+   * that, and a canvas one pixel off is stretched, which blurs every line.
+   */
+  let laid: [number, number] | null = null;
   const measure = (): boolean => {
     const w = host.journey.vw, h = host.journey.vh, d = window.devicePixelRatio || 1;
     if (!(w > 0 && h > 0)) return false;
-    if (w !== W || h !== H || d !== dpr) {
-      W = w; H = h; dpr = d;
+    const changed = w !== W || h !== H || d !== dpr;
+    if (changed) laid = null;
+    const dw = laid ? laid[0] : Math.round(w * d), dh = laid ? laid[1] : Math.round(h * d);
+    if (changed || dw !== DW || dh !== DH) {
+      const rescaled = d !== dpr || !W;
+      W = w; H = h; dpr = d; DW = dw; DH = dh;
       sc = Math.max(W / DESIGN_W, H / DESIGN_H);
       offX = (W - DESIGN_W * sc) / 2; offY = (H - DESIGN_H * sc) / 2;
-      backend.resize(Math.round(W * dpr), Math.round(H * dpr));
-      backend.setWidths(scene.widths.map((w2) => w2 * dpr / 2));
+      backend.resize(DW, DH);
+      if (rescaled) backend.setWidths(scene.widths.map((w2) => w2 * wider * dpr / 2));
     }
     return true;
   };
@@ -151,6 +198,8 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
   // ---- where a sheet is in a frame
   const num = (text: string, from: number): number => parseFloat(text.slice(from));
   const placed = (frame: Frame, sheet: Sheet, pan: [number, number]): Placed => {
+    // fixed to the window: placed where the drawing's own box begins
+    if (sheet.name === EXTRA) { const vb = frame.vb.split(' '); return { shown: true, scale: 1, x: Number(vb[0]), y: Number(vb[1]), opacity: 1 }; }
     if (sheet.name === 'ground') {
       const g = frame.ground;
       return g.d === 'none' ? HIDDEN : { shown: true, scale: 1, x: pan[0], y: pan[1] + Number(g.y), opacity: Number(g.o) };
@@ -199,6 +248,7 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
   const centreOf = (sheet: Sheet, z: number): [number, number] => {
     if (sheet.name === 'ground') return [0, 0];
     if (sheet.name === 'grid') return [0, -100];
+    if (sheet.name === EXTRA) return [DESIGN_W / 2, DESIGN_H / 2];
     const pan = host.panAt(z), s = sheet.info.scale(z);
     return [-pan[0] / s, -pan[1] / s];
   };
@@ -208,8 +258,7 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
     if (!frame) return 0;
     const vb = frame.vb.split(' ');
     const ax = (-Number(vb[0]) * sc + offX) * dpr, ay = (-Number(vb[1]) * sc + offY) * dpr;
-    const w = W * dpr, h = H * dpr;
-    return Math.hypot(Math.max(ax, w - ax), Math.max(ay, h - ay));
+    return Math.hypot(Math.max(ax, DW - ax), Math.max(ay, DH - ay));
   };
   const ask = (sheet: Sheet, e: number): void => {
     let slot = sheet.slots.get(e);
@@ -248,12 +297,19 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
   };
   /** Levels the frame just planned would have used, had they been there. */
   const wanted: { sheet: Sheet; e: number }[] = [];
+  let idlers: (() => void)[] = [], built = false;
   const pump = (): void => {
     if (stopped) return;
     while (inFlight < IN_FLIGHT) {
       const next = choose();
       if (!next) break;
       ask(next.sheet, next.e);
+    }
+    if (!inFlight) {
+      if (!built) { built = true; performance.mark('levels'); }
+      const told = idlers;
+      idlers = [];
+      told.forEach((f) => f());
     }
   };
   /** What to build next: what the current view lacks, then the anchors, then everything else; nearest in zoom first. */
@@ -298,8 +354,8 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
     plan.ink = [(rgb >> 16) / 255, ((rgb >> 8) & 255) / 255, (rgb & 255) / 255];
     const vb = frame.vb.split(' '), vbx = Number(vb[0]), vby = Number(vb[1]);
     const pan = panOf(frame);
-    const d = density(), w = W * dpr, h = H * dpr, edge = pad();
-    const toX = (x: number): number => ((x - vbx) * sc + offX) * dpr, toY = (y: number): number => ((y - vby) * sc + offY) * dpr;
+    const d = density(), w = DW, h = DH, edge = pad();
+    const toX = (x: number): number => ((x - vbx) * sc + offX) * dpr + moved, toY = (y: number): number => ((y - vby) * sc + offY) * dpr + moved;
     const clip = (l: number, t: number, r: number, b: number): Box | null => {
       const box: Box = [Math.max(0, Math.floor(l - edge)), Math.max(0, Math.floor(t - edge)), Math.min(w, Math.ceil(r + edge)), Math.min(h, Math.ceil(b + edge))];
       return box[0] < box[2] && box[1] < box[3] ? box : null;
@@ -393,8 +449,14 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
   };
 
   // ---- taking over from the SVG
-  await backend.ready();
-  if (!measure()) throw new Error('the window has no size yet');
+  try {
+    await backend.ready();
+  } catch (e) {
+    halt();
+    throw e;
+  }
+  if (stopped) return null;
+  if (!measure()) { halt(); throw new Error('the window has no size yet'); }
   // prime: what the current view needs, then the anchors
   await new Promise<void>((resolve) => {
     const check = (): void => {
@@ -409,6 +471,19 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
     };
     check();
   });
+  if (stopped) return null;
+  // Draw frames unseen before the first one that shows: each layer just inside both ends of its range,
+  // where it is in mid-fade. Whatever a driver leaves until a program is first used, and the pictures
+  // that fading layers are drawn into, are then made now and not in the middle of the first flight.
+  const rehearsal = new Set<number>();
+  for (const sheet of sheets) for (const z of [sheet.info.from + 0.05, sheet.info.to - 0.05]) if (z > -90 && z < 90) rehearsal.add(Number(z.toFixed(2)));
+  for (const z of rehearsal) {
+    if (stopped) return null;
+    build(host.frameAt(z));
+    backend.draw(plan);
+    // one at a time, in the page's idle moments: the SVG is still what is on screen, and may be in flight
+    await new Promise<void>((resolve) => { if (typeof requestIdleCallback === 'function') requestIdleCallback(() => resolve(), { timeout: 120 }); else setTimeout(resolve, 30); });
+  }
   if (stopped) return null;
 
   // Stacking: the SVG drawing, then the canvas over it, then everything the design paints after
@@ -438,8 +513,10 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
   let over: () => void = () => {};
   const handed = new Promise<void>((resolve) => { over = resolve; });
   const hide = (): void => {
+    performance.mark('renderer');
     canvas.style.opacity = '';
-    drawing.style.display = 'none';
+    // as the design hides its own layers: with the SVG attribute
+    drawing.setAttribute('display', 'none');
     host.mute(drawing);
     over();
   };
@@ -455,6 +532,19 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
     fade.onfinish = end;
     fade.oncancel = end;
   }
+  let watcher: ResizeObserver | null = null;
+  if (typeof ResizeObserver === 'function') {
+    watcher = new ResizeObserver((entries) => {
+      const size = entries[0].devicePixelContentBoxSize;
+      if (!size || !size[0] || stopped) return;
+      const w = size[0].inlineSize, h = size[0].blockSize;
+      // only ever a correction of a pixel: a browser emulating another density reports CSS pixels here
+      laid = Math.abs(w - W * dpr) < 1.5 && Math.abs(h - H * dpr) < 1.5 ? [w, h] : null;
+      redraw();
+    });
+    // a browser that cannot report device pixels keeps the rounded size
+    try { watcher.observe(canvas, { box: 'device-pixel-content-box' }); } catch { watcher = null; }
+  }
   // a window moved to a screen of another density
   let density0 = window.matchMedia ? window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`) : null;
   const rescale = (): void => {
@@ -469,9 +559,10 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
     if (stopped) return;
     stopped = true;
     host.onFrame(null);
+    if (watcher) watcher.disconnect();
     if (density0) density0.removeEventListener('change', rescale);
-    // the SVG is still there, and current as soon as its values are written again
-    drawing.style.display = '';
+    // the SVG is still there: put it back exactly as it was, and current as soon as its values are written again
+    drawing.removeAttribute('display');
     while (topPan.firstChild) pan.appendChild(topPan.firstChild);
     top.remove();
     host.mute(null);
@@ -481,7 +572,12 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
     backend.destroy();
     over();
   };
-  const gone = new Promise<void>((resolve) => backend.onLost(() => { stop(); resolve(); }));
+  halt = stop;
+  const gone = new Promise<void>((resolve) => backend.onLost(() => {
+    console.info('Perspective: the graphics chip was taken away; the drawing is SVG again');
+    stop();
+    resolve();
+  }));
 
   return {
     kind: backend.kind,
@@ -496,6 +592,9 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
       copy.width = canvas.width; copy.height = canvas.height;
       copy.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(pixels.buffer as ArrayBuffer), canvas.width, canvas.height), 0, 0);
       return copy.toDataURL('image/png');
+    },
+    idle(): Promise<void> {
+      return new Promise((resolve) => { idlers.push(resolve); pump(); });
     },
     async settled(): Promise<void> {
       for (;;) {

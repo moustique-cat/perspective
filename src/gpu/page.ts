@@ -97,7 +97,6 @@ export function readPage(svg: SVGSVGElement): PageScene {
       const sheet: RawSheet = { name, elements: [] };
       // the layer's own scale and opacity are set every frame; they are not part of its marks
       gather(child, IDENTITY, 1, sheet.elements);
-      if (!sheet.elements.length) throw new Error('layer ' + name + ' is empty');
       order.push(sheets.length);
       sheets.push(sheet);
     } else if (child.tagName === 'circle' && !atmosphere && styleOf(child).dash) {

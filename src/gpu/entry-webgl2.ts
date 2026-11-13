@@ -9,5 +9,5 @@ export const start: Start = async (host, options) => {
   if (!backend) return null;
   // without a graphics chip the browser's own SVG drawing is the faster of the two
   if (!options.force && isSoftware(backend.chip)) { backend.destroy(); return null; }
-  return run(host, backend, () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }));
+  return run(host, backend, () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }), options.fault);
 };

@@ -10,5 +10,5 @@ export const start: Start = async (host, options) => {
   // asked for outright on an adapter that draws on the processor: a test, in a browser that cannot show such a canvas
   const backend = await createWebGPU(document.createElement('canvas'), adapter, !(options.force && isFallback(adapter)));
   if (!backend) return null;
-  return run(host, backend, () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }));
+  return run(host, backend, () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }), options.fault);
 };

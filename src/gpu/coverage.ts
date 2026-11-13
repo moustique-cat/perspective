@@ -212,9 +212,11 @@ export function capsule(px: number, py: number, c: Capsule, discOf: (dx: number,
     if (t1 < t0) return 0;
   }
   let cov = S;
+  // a corner only reaches as far along the stroke as the neighbour's strip stays within a pixel of this one
+  const near = 2 * c.h + 1.5;
   if (roundA) cov += roundEnd(t0 - t, d, c.h) - S * (1 - edge(t - t0, m, q));
-  else if (!c.on && sinA > SHARP) cov += corner2(px, py, c.ax, c.ay, c.pux!, c.puy!, ux, uy, c.h, discOf) - S;
+  else if (!c.on && sinA > SHARP && t * sinA < near) cov += corner2(px, py, c.ax, c.ay, c.pux!, c.puy!, ux, uy, c.h, discOf) - S;
   if (roundB) cov += roundEnd(t - t1, d, c.h) - S * edge(t - t1, m, q);
-  else if (!c.on && sinB > SHARP) cov += corner2(px, py, c.bx, c.by, ux, uy, c.nux!, c.nuy!, c.h, discOf) - S;
+  else if (!c.on && sinB > SHARP && (L - t) * sinB < near) cov += corner2(px, py, c.bx, c.by, ux, uy, c.nux!, c.nuy!, c.h, discOf) - S;
   return cov < 0 ? 0 : cov > 1 ? 1 : cov;
 }

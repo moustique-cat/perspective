@@ -7,7 +7,7 @@ import './site.css';
 import { bindings, props as designProps } from './generated/page.js';
 import { ZMAX, ZMIN } from './design';
 import { mountPage, type Binding } from './dom';
-import { panAt, type Frame, type Props } from './frame';
+import { computeFrame, panAt, type Frame, type Props } from './frame';
 import { GL_ATTRIBUTES, isSoftware, rendererOf } from './gpu/attributes';
 import type { Host, Running, Start, StartOptions } from './gpu/host';
 import { Journey } from './journey';
@@ -22,11 +22,13 @@ declare global {
     __perspective?: Journey;
     /** The renderer once it has taken over; null once it is settled that the SVG stays. */
     __gpu?: Running | null;
+    /** Set by a test before the page loads: a deliberate fault for the renderer to draw (src/gpu/host.ts). */
+    __fault?: StartOptions['fault'];
   }
 }
 
 /** Where the built renderer files are; filled in by the build (scripts/build.mjs). */
-declare const __GPU_FILES__: { webgl2: string; webgpu: string } | undefined;
+declare const __GPU_FILES__: { webgl2: string; webgpu: string; bench: string } | undefined;
 
 /** The zoom is noted here when the page is left, so that ?original can be added or removed without losing one's place. */
 const PLACE = 'perspective';
@@ -133,12 +135,19 @@ function start(): void {
   };
 
   window.__perspective = journey;
+  performance.mark('zoomable');
+
+  // ?bench: the speed report (src/bench.ts), a file of its own
+  if (/[?&]bench(=|&|$)/.test(location.search)) {
+    (import.meta.env.DEV ? import('./bench') : import(/* @vite-ignore */ new URL(__GPU_FILES__!.bench, document.baseURI).href)).then((m) => m.run(ZMIN, ZMAX));
+  }
 
   arrive({
     root, svg: root.querySelector('svg')!, props, reduced, journey, sheets: sheets(),
     panAt: (z) => panAt(z, props),
     onFrame: (callback) => { also = callback; },
     frame: () => frame,
+    frameAt: (z) => computeFrame({ z, playing: 0, vw: journey.vw, vh: journey.vh, jump: null, announce: '', coarse: false, props }, { a: { key: '', t: '', d: '' }, b: { key: '', t: '', d: '' }, on: 'a' }),
     mute: page.mute,
   });
 }
@@ -155,6 +164,9 @@ function start(): void {
 function arrive(host: Host): void {
   const asked = /[?&]gpu=(\w+)/.exec(location.search);
   const want = asked ? asked[1] : '';
+  // ?marks=100000: the speed report's load test (src/gpu/renderer.ts)
+  const marks = /[?&]marks=(\d+)/.exec(location.search);
+  const fault = window.__fault || (marks ? { extra: +marks[1] } : undefined);
   if (original || host.props.handDrawn || want === 'svg') { window.__gpu = null; return; }
   const load = async (kind: 'webgpu' | 'webgl2', options: StartOptions): Promise<Running | null> => {
     let renderer: { start: Start };
@@ -176,14 +188,14 @@ function arrive(host: Host): void {
     const gpu = (navigator as Navigator & { gpu?: GPU }).gpu;
     if (want !== 'webgl2' && gpu) {
       const adapter = await gpu.requestAdapter().catch(() => null);
-      if (adapter) running = await load('webgpu', { force: !!want, adapter }).catch(() => null);
+      if (adapter) running = await load('webgpu', { force: !!want, adapter, fault }).catch(() => null);
     }
     if (running) {
       // the WebGL context was only made to find out
       const ext = gl && gl.getExtension('WEBGL_lose_context');
       if (ext) ext.loseContext();
     } else if (gl && want !== 'webgpu') {
-      running = await load('webgl2', { force: !!want, canvas });
+      running = await load('webgl2', { force: !!want, canvas, fault });
     }
     return running;
   };

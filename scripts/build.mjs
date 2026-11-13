@@ -13,7 +13,7 @@ import { build } from 'vite';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 fs.rmSync(path.join(root, 'dist'), { recursive: true, force: true });
 
-async function renderer(name) {
+async function renderer(name, source = `src/gpu/entry-${name}.ts`) {
   const result = await build({
     configFile: false,
     root,
@@ -28,7 +28,7 @@ async function renderer(name) {
       modulePreload: false,
       assetsDir: 'gpu',
       rolldownOptions: {
-        input: { [name]: path.join(root, `src/gpu/entry-${name}.ts`) },
+        input: { [name]: path.join(root, source) },
         preserveEntrySignatures: 'strict',
         output: { format: 'es', entryFileNames: 'gpu/[name]-[hash].js', assetFileNames: 'gpu/[name]-[hash][extname]' },
       },
@@ -42,7 +42,8 @@ async function renderer(name) {
   return entry.fileName;
 }
 
-const files = { webgl2: await renderer('webgl2'), webgpu: await renderer('webgpu') };
+// the speed report behind ?bench is built the same way: a file of its own, fetched only when asked for
+const files = { webgl2: await renderer('webgl2'), webgpu: await renderer('webgpu'), bench: await renderer('bench', 'src/bench.ts') };
 await build({
   root,
   logLevel: 'warn',

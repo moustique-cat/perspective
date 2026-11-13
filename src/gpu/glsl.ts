@@ -168,10 +168,12 @@ void main() {
       if (t1 < t0) own = 0.0;
     }
     cov = S;
+    // a corner only reaches as far along the stroke as the neighbour's strip stays within a pixel of this one
+    float near = 2.0 * h + 1.5;
     if (ra) cov += roundEnd(t0 - t, d, h, layer) - S * (1.0 - edge(t - t0, k));
-    else if (!dashed && sinA > ${SHARP}) cov += corner(pa, v_nb.xy, u, h, layer) - S;
+    else if (!dashed && sinA > ${SHARP} && t * sinA < near) cov += corner(pa, v_nb.xy, u, h, layer) - S;
     if (rb) cov += roundEnd(t - t1, d, h, layer) - S * edge(t - t1, k);
-    else if (!dashed && sinB > ${SHARP}) cov += corner(pb, u, v_nb.zw, h, layer) - S;
+    else if (!dashed && sinB > ${SHARP} && (L - t) * sinB < near) cov += corner(pb, u, v_nb.zw, h, layer) - S;
     cov = clamp(cov, 0.0, 1.0) * own;
   }
   o = u_mode == 1 ? vec4(0.0, 0.0, 0.0, cov) : u_color * cov;
