@@ -1,15 +1,17 @@
 // Comparing the built site with the original artboard, in two independent ways.
 //
 // 1. Structure: every element, attribute, inline style, text, computed style and on-screen box
-//    must be exactly equal. This is deterministic and has no tolerance.
-// 2. Picture: screenshots of the two pages. They are normally bit-identical. The exception is
-//    Chromium's own compositing: it sometimes draws a translucent group through an
-//    intermediate layer, which lands a fraction of a pixel softer. Whether it does depends on
-//    details of the page that have nothing to do with the drawing, so the two pages can
-//    disagree at an isolated zoom (so far: one, where the "Moustique is here" ring is fading
-//    in, on a wide window). Such a difference keeps the amount of ink the same and only
-//    redistributes it between neighbouring pixels; that is what is allowed, and only rarely.
-//    A real difference (a stroke width, a colour, a missing mark) changes the amount of ink.
+//    must be exactly equal.
+// 2. Picture: screenshots of the two pages must be bit-identical.
+//
+// Neither has a tolerance. For the pictures that takes one precaution, about the test tool
+// rather than the site. A blocking touch or wheel listener that covers a whole page makes
+// Chromium split the page into compositing layers differently, and while a faded group is on
+// screen (the "Moustique is here" ring appearing, for one) lines then land a fraction of a pixel
+// softer and text can change its anti-aliasing. Playwright adds exactly such listeners to a page
+// the first time a locator or waitForFunction is used on it. So the pages being compared are
+// only ever driven with goto, evaluate and screenshot, and plainPage() checks afterwards that
+// neither picked up such a listener: from the test tool, or from the site itself.
 import type { Page, TestInfo } from '@playwright/test';
 import fs from 'node:fs';
 import { PNG } from 'pngjs';
@@ -54,14 +56,12 @@ export function pixelDelta(a: Buffer, b: Buffer): PixelDelta {
   return { differing, worst, inkA, inkB, box: differing ? box : null, picture: differing ? PNG.sync.write(out) : null };
 }
 
-/** The most a compositing difference has been seen to move a pixel, with a little headroom. */
-export const SOFT_LEVELS = 20;
-/** Two pictures of the same drawing hold the same ink to within this fraction. */
-export const SAME_INK = 0.0005;
-
-/** True if two pictures differ only by ink shifting between neighbouring pixels. */
-export function sameInk(d: PixelDelta): boolean {
-  return d.worst <= SOFT_LEVELS && Math.abs(d.inkA - d.inkB) <= SAME_INK * Math.max(d.inkA, d.inkB, 1);
+/** Total darkness of a picture: 0 for a blank white page, 255 for each black pixel. */
+export function inkIn(picture: Buffer): number {
+  const png = PNG.sync.read(picture);
+  let ink = 0;
+  for (let i = 0; i < png.data.length; i += 4) ink += 255 - png.data[i];
+  return ink;
 }
 
 /** Wait until the page has painted its current state. */
@@ -140,8 +140,39 @@ export async function openReference(page: Page, query = ''): Promise<void> {
 
 export async function openSite(page: Page, query = ''): Promise<void> {
   await page.goto('/' + query);
-  await page.waitForFunction(() => document.documentElement.classList.contains('fonts') && !!window.__perspective);
+  // waited for inside the page: waitForFunction would add the test tool's listeners (see above)
+  await page.evaluate(() => new Promise<void>((done) => {
+    const check = () => (document.documentElement.classList.contains('fonts') && window.__perspective ? done() : setTimeout(check, 10));
+    check();
+  }));
   await fontsIn(page);
+}
+
+/**
+ * The blocking touch and wheel listeners that cover the whole page, which change how Chromium
+ * composites it (see above). Empty for a page that may be compared.
+ */
+export async function pageWideBlockingListeners(page: Page): Promise<string[]> {
+  const cdp = await page.context().newCDPSession(page);
+  const found: string[] = [];
+  for (const target of ['window', 'document', 'document.documentElement', 'document.body', "document.querySelector('.ink')"]) {
+    const { result } = await cdp.send('Runtime.evaluate', { expression: target });
+    if (!result.objectId) continue;
+    const { listeners } = await cdp.send('DOMDebugger.getEventListeners', { objectId: result.objectId });
+    for (const l of listeners) {
+      if (/^(touchstart|touchmove|wheel|mousewheel)$/.test(l.type) && !l.passive) found.push(`${l.type} on ${target}`);
+    }
+  }
+  await cdp.detach();
+  return found;
+}
+
+/** Fails if a page has been touched by something that changes how the browser draws it. */
+export async function plainPage(page: Page, name: string): Promise<void> {
+  const found = await pageWideBlockingListeners(page);
+  if (!found.length) return;
+  throw new Error(`${name} has a blocking listener covering the whole page (${found.join(', ')}), which changes how the browser draws it, so its pictures cannot be compared. ` +
+    'If the test tool added it: drive compared pages with goto, evaluate and screenshot only. If the site did: listen on the parts under the pointer instead (see src/main.ts).');
 }
 
 export const setReferenceZoom = (page: Page, z: number) => page.evaluate((zz) => (window as unknown as { __ref: { setZ(z: number): void } }).__ref.setZ(zz), z);
@@ -151,16 +182,14 @@ export interface Comparison {
   compared: number;
   /** Zooms at which the two page structures are not exactly equal. */
   structure: string[];
-  /** Zooms at which the pictures differ in the amount of ink, or by more than a soft edge. */
+  /** Zooms at which the screenshots are not bit-identical. */
   pixels: string[];
-  /** Zooms at which the pictures hold the same ink but are not bit-identical. */
-  soft: string[];
   /** Zooms at which the screenshots are bit-identical. */
   identical: number;
 }
 
 export async function compareAcross(reference: Page, site: Page, zooms: number[], info: TestInfo): Promise<Comparison> {
-  const result: Comparison = { compared: zooms.length, structure: [], pixels: [], soft: [], identical: 0 };
+  const result: Comparison = { compared: zooms.length, structure: [], pixels: [], identical: 0 };
   for (const z of zooms) {
     await Promise.all([setReferenceZoom(reference, z), setSiteZoom(site, z)]);
     await Promise.all([repaint(reference), repaint(site)]);
@@ -176,19 +205,19 @@ export async function compareAcross(reference: Page, site: Page, zooms: number[]
     if (delta.differing === 0) { result.identical++; continue; }
     const note = `z = ${z}: ${delta.differing} px differ by up to ${delta.worst} levels, within x ${delta.box![0]}..${delta.box![2]}, y ${delta.box![1]}..${delta.box![3]}; ink ${delta.inkA} vs ${delta.inkB}`;
     // keep the pictures of anything that is not bit-identical (CI uploads them when a test fails)
-    if (result.soft.length + result.pixels.length < 4) {
+    if (result.pixels.length < 4) {
       fs.writeFileSync(info.outputPath(`z${z}-original.png`), a);
       fs.writeFileSync(info.outputPath(`z${z}-site.png`), b);
       if (delta.picture) fs.writeFileSync(info.outputPath(`z${z}-difference.png`), delta.picture);
     }
-    if (sameInk(delta)) { result.soft.push(note); continue; }
     result.pixels.push(note);
   }
+  await plainPage(reference, 'the reference page');
+  await plainPage(site, 'the site');
   return result;
 }
 
 export function summary(r: Comparison): string {
   return `${r.compared} zooms: structure equal at ${r.compared - r.structure.length}, pictures bit-identical at ${r.identical}` +
-    (r.soft.length ? `, same ink but softer edges at ${r.soft.length} (${r.soft.join('; ')})` : '') +
     (r.pixels.length ? `, DIFFERENT at ${r.pixels.length}` : '');
 }

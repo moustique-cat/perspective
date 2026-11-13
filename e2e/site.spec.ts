@@ -6,7 +6,7 @@ import { gzipSync } from 'node:zlib';
 import { LMS, ZMAX } from '../src/generated/core.js';
 import { computeFrame, MIN_RAIL_H, MIN_RAIL_W, type Props } from '../src/frame';
 import { props as designProps } from '../src/generated/page.js';
-import { openSite, pixelDelta, sameInk, settled } from './compare';
+import { inkIn, openSite, pixelDelta, plainPage, settled } from './compare';
 
 const html = fs.readFileSync(new URL('../dist/index.html', import.meta.url), 'utf8');
 const firstPaintEnd = html.indexOf('</script>', html.indexOf('<script id="first-paint">')) + 9;
@@ -27,6 +27,11 @@ async function atRest(page: Page): Promise<number> {
 }
 /** A flight stops within 0.0006 decades of its target: that is the design's own rest threshold. */
 const REST = 0.00061;
+/**
+ * Moustique in her room puts about 1.5 million levels of darkness into the middle of a
+ * 1280 x 720 window. A blank or half-drawn page stays well under two thirds of that.
+ */
+const INK_OF_A_CAT = 1_000_000;
 const expectAt = (z: number, target: number) => expect(Math.abs(z - target), `zoom ${z}, expected ${target}`).toBeLessThanOrEqual(REST);
 
 test.describe('loading', () => {
@@ -77,7 +82,11 @@ test.describe('loading', () => {
       // the whole page, with its words hidden: this is the drawing the first part must produce
       const whole = await context.newPage();
       await openSite(whole);
-      await whole.addStyleTag({ content: '.hdr,.rail,.bl{opacity:0 !important}' });
+      await whole.evaluate(() => {
+        const hide = document.createElement('style');
+        hide.textContent = '.hdr,.rail,.bl{opacity:0 !important}';
+        document.head.append(hide);
+      });
       await settled(whole);
       const expected = await whole.screenshot();
       // only the beginning of the page: no main script, no fonts, no late layers
@@ -87,7 +96,8 @@ test.describe('loading', () => {
       await settled(partial);
       expect(await partial.evaluate(() => typeof window.__perspective)).toBe('undefined');
       const delta = pixelDelta(await partial.screenshot(), expected);
-      expect(delta.differing === 0 || sameInk(delta), `${delta.differing} px differ`).toBe(true);
+      expect(delta.differing, `the first view differs from the finished page, by up to ${delta.worst} levels`).toBe(0);
+      await plainPage(whole, 'the finished page');
       await context.close();
     });
   }
@@ -100,8 +110,8 @@ test.describe('loading', () => {
     const shownAfter = Date.now() - started;
     expect(await page.evaluate(() => typeof window.__perspective)).toBe('undefined');
     expect(await page.evaluate(() => getComputedStyle(document.querySelector('.ink')!).visibility)).toBe('visible');
-    const picture = await page.screenshot({ clip: { x: 200, y: 150, width: 640, height: 400 } });
-    expect(pixelDelta(picture, picture).differing).toBe(0);
+    const drawn = inkIn(await page.screenshot({ clip: { x: 200, y: 150, width: 640, height: 400 } }));
+    expect(drawn).toBeGreaterThan(INK_OF_A_CAT);
     const inked = await page.evaluate(() => document.querySelector('[data-layer="cat"]')!.getBoundingClientRect().width);
     expect(inked).toBeGreaterThan(300);
     // 2. the main script arrives: zooming works although most layers have not arrived
@@ -166,6 +176,33 @@ test.describe('responding', () => {
     expect(prevented).toEqual([true, true, true, true]);
     // a pinch (ctrl + wheel) zooms faster per unit, as in the design: 4 x 4 events x 0.012
     expectAt(await atRest(page), 0.192);
+  });
+
+  test('the wheel is claimed at every point of the page, at any zoom', async ({ browser }) => {
+    // The claim is made by three parts of the page rather than by the page as a whole
+    // (src/main.ts says why), so nothing may be left uncovered between them.
+    for (const viewport of [{ width: 1280, height: 820 }, { width: 2560, height: 1440 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
+      const context = await browser.newContext({ viewport, reducedMotion: 'reduce' });
+      const page = await context.newPage();
+      await openSite(page);
+      const unclaimed = await page.evaluate(() => {
+        const missed = new Set<string>();
+        for (const z of [0, -15, 27.9, 6.4, 13]) {
+          window.__perspective!.setZ(z);
+          for (let x = 3; x < innerWidth; x += 9) {
+            for (let y = 3; y < innerHeight; y += 9) {
+              const under = document.elementFromPoint(x, y) || document.documentElement;
+              const e = new WheelEvent('wheel', { deltaY: 0, ctrlKey: true, bubbles: true, cancelable: true });
+              under.dispatchEvent(e);
+              if (!e.defaultPrevented) missed.add(under.tagName.toLowerCase() + '.' + (under.getAttribute('class') || ''));
+            }
+          }
+        }
+        return [...missed];
+      });
+      expect(unclaimed, `parts of a ${viewport.width} x ${viewport.height} window where the wheel would reach the browser`).toEqual([]);
+      await context.close();
+    }
   });
 
   test('Fly out flies and pauses; Back to Moustique returns', async ({ browser }) => {

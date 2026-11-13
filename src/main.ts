@@ -38,9 +38,7 @@ function start(): void {
   );
 
   const handlers: Record<string, (e: Event, arg?: string) => void> = {
-    // On a page of its own the wheel must not also zoom or swipe the browser itself (a
-    // trackpad pinch arrives as ctrl+wheel), so the page claims it.
-    onWheel: (e) => { e.preventDefault(); journey.onWheel(e as WheelEvent); },
+    onWheel: (e) => journey.onWheel(e as WheelEvent),
     onRange: (e) => journey.onRange((e.target as HTMLInputElement).value),
     onRailKey: (e) => journey.onRailKey(e as KeyboardEvent),
     onPd: (e) => {
@@ -58,8 +56,19 @@ function start(): void {
   for (const { el, type, handler, arg } of page.events) {
     const fn = handlers[handler];
     if (!fn) throw new Error('no handler for ' + handler);
-    el.addEventListener(type, (e) => fn(e, arg), type === 'wheel' ? { passive: false } : undefined);
+    el.addEventListener(type, (e) => fn(e, arg), type === 'wheel' ? { passive: true } : undefined);
   }
+
+  // On a page of its own the wheel must not also zoom or swipe the browser itself (a trackpad
+  // pinch arrives as ctrl+wheel), so the page has to claim it with a blocking listener. That
+  // listener sits on the three parts that between them are under every point of the page, and
+  // NOT on the root or the window. A blocking wheel or touch listener over the whole page
+  // makes Chromium split the page into compositing layers differently: while a faded group is
+  // on screen (the "Moustique is here" ring appearing, for one) lines land a fraction of a
+  // pixel softer and text can lose its sub-pixel anti-aliasing. Placed like this the listener
+  // changes no pixel; e2e/compare.ts refuses to compare a page that has one on its root.
+  const claim = (e: Event) => e.preventDefault();
+  root.querySelectorAll('.stage, .rail, [role="group"]').forEach((el) => el.addEventListener('wheel', claim, { passive: false }));
 
   // Safari reports a trackpad pinch as gesture events with a running scale, not as a wheel.
   let scale = 1;
