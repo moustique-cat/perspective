@@ -19,6 +19,7 @@
 //   page.html      the page markup, already drawn at the home zoom
 //   deferred.html  the layers that are not visible at the home zoom, nearest first
 //   page.js        binding table and constants for the runtime and the tests
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
@@ -86,6 +87,13 @@ function walk(node, fn, parent = null) {
 const find = (node, pred) => { const out = []; walk(node, (n) => { if (n.tag && pred(n)) out.push(n); }); return out; };
 const clone = (n) => (n.text !== undefined ? { text: n.text } : { tag: n.tag, attrs: n.attrs.map((a) => [...a]), children: n.children.map(clone) });
 const look = (scope, p) => p.split('.').reduce((v, k) => (v == null ? undefined : v[k]), scope);
+
+// ---- the original must be exactly the file that was delivered
+for (const line of fs.readFileSync(path.join(path.dirname(ORIGINAL), 'SHA256SUMS'), 'utf8').trim().split('\n')) {
+  const [sum, name] = line.split(/\s+/);
+  const actual = createHash('sha256').update(fs.readFileSync(path.join(path.dirname(ORIGINAL), name))).digest('hex');
+  if (actual !== sum) fail(`design/original/${name} has been modified (its checksum no longer matches SHA256SUMS). The original is never edited.`);
+}
 
 // ---- read the original
 const src = fs.readFileSync(ORIGINAL, 'utf8');
