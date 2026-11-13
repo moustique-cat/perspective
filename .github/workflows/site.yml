@@ -1,19 +1,30 @@
 name: Site
 
+# Tests every push and pull request. Publishes to GitHub Pages from main and, while a
+# milestone is in the works, publishes that milestone's branch beside it under /preview/,
+# so it can be tried on real devices before it is merged.
+
 on:
   push:
-    branches: [main]
+    # main, and the branch named in PREVIEW_BRANCH below
+    branches: [main, moustiques-per-second]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+env:
+  # The branch published under /preview/. It must also be allowed to deploy in
+  # Settings > Environments > github-pages. Once the branch is deleted, the preview is gone
+  # from the site at the next publish.
+  PREVIEW_BRANCH: moustiques-per-second
+
 jobs:
   test:
     name: Build and test
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     concurrency:
       group: test-${{ github.ref }}
       cancel-in-progress: true
@@ -31,7 +42,7 @@ jobs:
         working-directory: design/original
         run: sha256sum --check SHA256SUMS
 
-      - name: Unit tests (the site's code against the design's own code)
+      - name: Unit tests (the site's code against the design's own code; the renderer's arithmetic against brute force)
         run: npm test
 
       - name: Build
@@ -40,8 +51,14 @@ jobs:
       - name: Install the test browser
         run: npx playwright install --with-deps chromium
 
-      - name: Browser tests (the built site against the original artboard)
+      - name: Browser tests (the built site against the original artboard; the renderer against the SVG)
         run: npm run test:e2e
+
+      - name: Speed report (no graphics chip here, so its figures are a floor and a regression check)
+        shell: bash
+        run: |
+          npm run bench -- --check | tee bench.md
+          { echo '## Speed report: Linux, no graphics chip'; echo; sed -n '/^Machine:/,$p' bench.md; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the test output when something failed
         if: failure()
@@ -51,20 +68,100 @@ jobs:
           path: test-results
           retention-days: 14
 
+  mac:
+    # GitHub's Macs: the one place in CI where the browser may reach a graphics chip.
+    # What it finds goes into the run's summary; it does not gate publishing.
+    name: On a Mac
+    runs-on: macos-latest
+    timeout-minutes: 40
+    continue-on-error: true
+    concurrency:
+      group: mac-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Install the test browser
+        run: npx playwright install chromium
+
+      - name: The renderer on the graphics chip, if the browser can reach one
+        shell: bash
+        run: |
+          npm run test:e2e -- --project=chip | tee chip.txt
+          { echo '## On the chip: macOS'; echo; echo '```'; tail -n 90 chip.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Speed report
+        shell: bash
+        run: |
+          npm run bench | tee bench.md
+          { echo '## Speed report: macOS'; echo; sed -n '/^Machine:/,$p' bench.md; } >> "$GITHUB_STEP_SUMMARY"
+
+  assemble:
+    # GitHub Pages holds one site per repository, so every publish carries both: the site
+    # built from main at the root, unchanged, and the milestone branch under /preview/.
+    name: Assemble the site
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/moustiques-per-second')
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: The site, from main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          path: main
+
+      - name: Is there a branch to preview?
+        id: preview
+        run: |
+          if git -C main ls-remote --exit-code --heads origin "$PREVIEW_BRANCH" > /dev/null; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: The preview, from its branch
+        if: steps.preview.outputs.exists == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.PREVIEW_BRANCH }}
+          path: preview
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: main/.nvmrc
+
+      - name: Build the site
+        working-directory: main
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build the preview into /preview/
+        if: steps.preview.outputs.exists == 'true'
+        working-directory: preview
+        run: |
+          npm ci
+          npm run build
+          mv dist ../main/dist/preview
+
       - name: Check that GitHub Pages is switched on
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/configure-pages@v6
 
       - name: Hand the built site to GitHub Pages
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v5
         with:
-          path: dist
+          path: main/dist
 
   deploy:
     name: Publish
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: test
+    needs: assemble
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
