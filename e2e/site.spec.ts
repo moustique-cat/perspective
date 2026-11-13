@@ -56,6 +56,12 @@ test.describe('loading', () => {
     expect(await page.evaluate(() => document.querySelectorAll('template').length)).toBe(0);
   });
 
+  test('ships the design\'s stylesheet as written, fallback colours included', () => {
+    const design = fs.readFileSync(new URL('../src/generated/design.css', import.meta.url), 'utf8').replace(/^\/\*.*\*\/\n/, '').trim();
+    for (const rule of design.split('\n')) expect(html, rule.slice(0, 60)).toContain(rule);
+    expect(html).toContain('.t2{color:#4A4A4A;color:color-mix(in srgb,currentColor 76%,#FFFFFF)}');
+  });
+
   test('stays within its size budget', () => {
     const sizes = { firstView: gz(html.slice(0, firstPaintEnd)), interactive: gz(html.slice(0, scriptEnd)), whole: gz(html) };
     console.log(`  compressed: first view ${sizes.firstView} B, zoomable ${sizes.interactive} B, whole page ${sizes.whole} B`);

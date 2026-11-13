@@ -43,8 +43,9 @@ function singleResponse(): Plugin {
           scripts++;
         } else if (name.endsWith('.css')) {
           const before = page;
-          // the stylesheet moves from assets/ into the page, so its relative URLs lose one level
-          const css = String(file.source).trim().replace(/url\((['"]?)\.\.\//g, 'url($1./');
+          // The stylesheet is not minified (see cssMinify below); only comments and blank lines
+          // go. It moves from assets/ into the page, so its relative URLs lose one level.
+          const css = String(file.source).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\n\s*\n+/g, '\n').trim().replace(/url\((['"]?)\.\.\//g, 'url($1./');
           page = page.replace(/<link rel="stylesheet"[^>]*>\s*/, () => `<style>${css}</style>\n`);
           if (page === before) throw new Error('stylesheet link not found in index.html');
           delete bundle[name];
@@ -65,6 +66,9 @@ export default defineConfig({
     target: 'es2022',
     modulePreload: false,
     cssCodeSplit: false,
+    // The design's stylesheet ships as written. A minifier would drop its fallback colours
+    // (the plain colour before each color-mix()), which older browsers rely on.
+    cssMinify: false,
     assetsInlineLimit: 0,
     rolldownOptions: {
       output: { format: 'iife' },
