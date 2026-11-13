@@ -64,9 +64,10 @@ test('same picture as the original with scripts switched off (the page as first 
   const reference = await withJs.newPage();
   await openReference(reference);
   // The original, photographed as it happens to have loaded, is not always the same picture:
-  // its words are first drawn in a fallback font and Chromium can leave a trace of that
-  // (some 30 pixels, one level off). Redrawn, it always is. The scripts-off page needs no such
-  // care: it cannot run the redraw anyway, and it is the page exactly as delivered.
+  // in 6 of 36 loads measured, some 30 pixels along a line of its words were one level off
+  // (probably a trace of the fallback font they were first drawn in; the cause was not pinned
+  // down). Redrawn, it always is. The scripts-off page was the same picture in all 36, and it
+  // could not run the redraw anyway.
   await repaint(reference);
   const expected = await reference.screenshot();
   const noJs = await browser.newContext({ viewport: { width: 1280, height: 820 }, javaScriptEnabled: false });

@@ -65,7 +65,7 @@ function start(): void {
   // NOT on the root or the window. A blocking wheel or touch listener over the whole page
   // makes Chromium split the page into compositing layers differently: while a faded group is
   // on screen (the "Moustique is here" ring appearing, for one) lines land a fraction of a
-  // pixel softer and text can lose its sub-pixel anti-aliasing. Placed like this the listener
+  // pixel softer and text can change its anti-aliasing. Placed like this the listener
   // changes no pixel; e2e/compare.ts refuses to compare a page that has one on its root.
   const claim = (e: Event) => e.preventDefault();
   root.querySelectorAll('.stage, .rail, [role="group"]').forEach((el) => el.addEventListener('wheel', claim, { passive: false }));
