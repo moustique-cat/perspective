@@ -132,7 +132,17 @@ test('the takeover: nothing moves when the canvas goes in, then one even fade', 
     const whole = measure(before, after);
     console.log(`  zoom ${z}: canvas going in changes ${entering.over16 ? 'MORE THAN 16 levels somewhere' : `at most ${entering.worst} of 255 levels`}; middle of the fade within ${uneven} of the average of its ends; last step ${leaving.worst}; the whole change: worst pixel ${whole.worst}, ink ${(100 * (whole.inkGpu / whole.inkSvg - 1)).toFixed(2)} %`);
     if (entering.worst > 4 || uneven > 2) fs.writeFileSync(info.outputPath(`takeover-z${z}.png`), measure(before, start).picture());
-    expect(entering.worst, 'the page changed when the canvas went in').toBeLessThanOrEqual(4);
+    // where on the page, if anywhere: the words (header, caption, rail) or the drawing
+    const zones: Record<string, [number, number]> = { header: [0, 0], caption: [0, 0], rail: [0, 0], drawing: [0, 0] };
+    for (let y = 0; y < before.height; y++) for (let x = 0; x < before.width; x++) {
+      const d = Math.abs(before.data[4 * (y * before.width + x)] - start.data[4 * (y * before.width + x)]);
+      if (d <= 4) continue;
+      const zone = x >= 1032 ? 'rail' : y < 110 && x < 620 ? 'header' : y > 590 && x < 900 ? 'caption' : 'drawing';
+      zones[zone][0]++;
+      zones[zone][1] = Math.max(zones[zone][1], d);
+    }
+    const where = Object.entries(zones).map(([name, [count, worst]]) => `${name}: ${count} px, worst ${worst}`).join('; ');
+    expect(entering.worst, `the page changed when the canvas went in, at zoom ${z} (pixels more than 4 levels off: ${where})`).toBeLessThanOrEqual(4);
     expect(uneven, 'the fade is not an even blend').toBeLessThanOrEqual(2);
     expect(leaving.worst, 'the fade does not end on the final picture').toBeLessThanOrEqual(2);
     await svg.close();
@@ -151,7 +161,8 @@ test('after the takeover: the canvas is what is on screen, the SVG drawing rests
   await fontsIn(page);
   await page.waitForTimeout(600);
   // the page, its fonts, one renderer and its worker: nothing else, and nothing from elsewhere
-  expect(requests.map((r) => r.replace(/-[\w-]{8}\.js$/, '.js')).sort()).toEqual(['/', '/fonts/eb-garamond-v33-italic-latin.woff2', '/fonts/eb-garamond-v33-latin.woff2', '/fonts/inter-v20-latin.woff2', '/gpu/levels.js', '/gpu/webgl2.js']);
+  // (a browser may fetch a font file again for another weight; what matters here is which files)
+  expect([...new Set(requests.map((r) => r.replace(/-[\w-]{8}\.js$/, '.js')))].sort()).toEqual(['/', '/fonts/eb-garamond-v33-italic-latin.woff2', '/fonts/eb-garamond-v33-latin.woff2', '/fonts/inter-v20-latin.woff2', '/gpu/levels.js', '/gpu/webgl2.js']);
 
   await setZoom(page, 13.2);
   const state = await page.evaluate(() => {
