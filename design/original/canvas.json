@@ -1,0 +1,48 @@
+{
+  "v": 3,
+  "attachments": {},
+  "boards": {
+    "PowersRefined.dc.html": {
+      "expand": "fill",
+      "h": 820,
+      "is_interactive": true,
+      "title": "1b · Powers of Moustique (refined)",
+      "w": 1280,
+      "x": 635,
+      "y": -113
+    }
+  },
+  "createdOnFiles": {
+    "at": "2026-11-12T21:27:46Z",
+    "v": 1
+  },
+  "designSystems": [],
+  "launch": {
+    "view": "canvas"
+  },
+  "noteOrder": [
+    "title",
+    "nD"
+  ],
+  "notes": {
+    "nD": {
+      "text": "1b · The same journey, refined. Moustique sits at the optical centre of the open stage. Jump to is now a true scale: landmarks sit at their real powers of ten, and you can drag it. Captions hold and crossfade, Fly out slows at every stop, the readout never moves the controls, and phones get drag and pinch.",
+      "w": 560,
+      "x": 635,
+      "y": 787
+    },
+    "title": {
+      "kind": "title1",
+      "maxW": 4000,
+      "text": "Perspective — three ways to feel scale through Moustique",
+      "w": 240,
+      "x": 0,
+      "y": -300
+    }
+  },
+  "order": [
+    "PowersRefined.dc.html"
+  ],
+  "pages": [],
+  "title": "Perspective"
+}
