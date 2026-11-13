@@ -30,10 +30,13 @@ Also from the owner:
 
 ## 2. Measured in the cloud container
 
-Linux, 4 cores, no graphics chip. Playwright 1.63.0 with Chromium 153.0.8010.12.
+Linux, 4 cores, no graphics chip. Node.js 22.23.4, Playwright 1.63.0 with Chromium 153.0.8010.12.
 
-- **Baseline on `main` (a9c0349):** 56 unit tests and 35 browser tests pass. Compressed sizes:
-  first view 12,494 B, zoomable 26,110 B, whole page 148,034 B.
+- **Baseline at a9c0349:** 56 unit tests and 35 browser tests pass. Compressed sizes:
+  first view 12,494 B, zoomable 26,110 B, whole page 148,034 B. `main` has since gained
+  13cf6fd, which pins Node.js 26.13.1 in `.nvmrc` (CI now uses it) and changes the README's
+  setup to fnm; no code changed. This branch sits on top of it. The tests were **not** run on
+  Node.js 26 there, so run the baseline again first.
 - **WebGL2** works in headless Chromium through SwiftShader. `failIfMajorPerformanceCaveat: true`
   did **not** refuse it, so software rendering has to be recognised another way (the renderer
   string from `WEBGL_debug_renderer_info` read "SwiftShader").
@@ -235,8 +238,7 @@ on phones.
 
 ## 6. Housekeeping
 
-- The cloud session's auto-named branch `claude/intelligent-cori-d26ybr` is still on GitHub,
-  with nothing on it beyond `main`. It can be deleted.
+- The cloud session left nothing else on GitHub: its auto-named branch was never pushed.
 - Suggested order: marks into records with unit tests; WebGL2 backend; comparison against the
   SVG and tuning; WebGPU backend; the page (takeover, `?original`, loading); `npm run bench`
   and the `?bench` page; CI, the Mac job and the preview; screenshots and the pull request.
