@@ -411,29 +411,47 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
   });
   if (stopped) return null;
 
+  // Stacking: the SVG drawing, then the canvas over it, then everything the design paints after
+  // the drawing (labels, the Sun, the marker), moved into an SVG of its own on top. The canvas
+  // is an opaque picture, so it can simply fade in over the SVG drawing: the browser blends an
+  // ordinary page layer without redrawing what is under it. (Fading the SVG group away
+  // instead would make Chromium redraw it softer for the length of the fade.)
+  const drawing = scene.drawing;
+  const pan = drawing.parentNode as SVGGElement;
+  const top = host.svg.cloneNode(false) as SVGSVGElement, topPan = pan.cloneNode(false) as SVGGElement;
+  top.removeAttribute('data-b');
+  topPan.removeAttribute('data-b');
+  top.appendChild(topPan);
+  while (drawing.nextSibling) topPan.appendChild(drawing.nextSibling);
+  let box = '', shift = '';
+  const follow = (frame: Frame): void => {
+    if (frame.vb !== box) top.setAttribute('viewBox', box = frame.vb);
+    if (frame.pan !== shift) topPan.setAttribute('transform', shift = frame.pan);
+  };
   canvas.setAttribute('aria-hidden', 'true');
-  canvas.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;display:block;pointer-events:none';
-  // behind the SVG, which keeps the labels, the Sun and the marker: they are drawn over the picture as before
-  host.root.insertBefore(canvas, host.svg);
+  canvas.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;display:block;pointer-events:none;opacity:0';
+  host.root.insertBefore(top, host.svg.nextSibling);
+  host.root.insertBefore(canvas, top);
+  const each = (frame: Frame): void => { follow(frame); draw(frame); };
   redraw();
   took = true;
-  const drawing = scene.drawing;
+  let over: () => void = () => {};
+  const handed = new Promise<void>((resolve) => { over = resolve; });
   const hide = (): void => {
+    canvas.style.opacity = '';
     drawing.style.display = 'none';
     host.mute(drawing);
+    over();
   };
   const moving = host.journey.playing !== 0 || host.journey.z !== host.journey.zT;
-  host.onFrame(draw);
-  if (moving || host.reduced || typeof drawing.animate !== 'function') {
+  host.onFrame(each);
+  if (moving || host.reduced || typeof canvas.animate !== 'function') {
     // in motion every frame differs from the last anyway: change over between two frames
     hide();
   } else {
-    // at rest: the SVG drawing, on a sheet of white, fades away over the same picture drawn by the chip
-    const sheet = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    for (const [name, value] of [['x', '-1e6'], ['y', '-1e6'], ['width', '2e6'], ['height', '2e6'], ['fill', '#FFFFFF']]) sheet.setAttribute(name, value);
-    drawing.insertBefore(sheet, drawing.firstChild);
-    const fade = drawing.animate([{ opacity: 1 }, { opacity: 0 }], { duration: FADE_MS, easing: 'linear' });
-    const end = (): void => { sheet.remove(); if (!stopped) hide(); };
+    // at rest: the chip's picture fades in over the same picture drawn by the SVG
+    const fade = canvas.animate([{ opacity: 0 }, { opacity: 1 }], { duration: FADE_MS, easing: 'linear' });
+    const end = (): void => { if (!stopped) hide(); };
     fade.onfinish = end;
     fade.oncancel = end;
   }
@@ -454,18 +472,23 @@ export async function run(host: Host, backend: Backend, makeWorker: (() => Worke
     if (density0) density0.removeEventListener('change', rescale);
     // the SVG is still there, and current as soon as its values are written again
     drawing.style.display = '';
+    while (topPan.firstChild) pan.appendChild(topPan.firstChild);
+    top.remove();
     host.mute(null);
     host.journey.render();
     canvas.remove();
     if (worker) worker.terminate();
     backend.destroy();
+    over();
   };
-  backend.onLost(stop);
+  const gone = new Promise<void>((resolve) => backend.onLost(() => { stop(); resolve(); }));
 
   return {
     kind: backend.kind,
     chip: backend.chip,
     stats,
+    handed,
+    gone,
     async snapshot(): Promise<string> {
       redraw();
       const pixels = await backend.read();

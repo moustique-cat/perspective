@@ -187,9 +187,21 @@ function arrive(host: Host): void {
     }
     return running;
   };
+  let tries = 0;
   const begin = (): void => {
-    const idle = (): void => { go().catch((e) => { console.info('Perspective: the drawing stays as SVG (' + e + ')'); return null; }).then((running) => { window.__gpu = running; }); };
+    const idle = (): void => {
+      go().catch((e) => { console.info('Perspective: the drawing stays as SVG (' + e + ')'); return null; }).then((running) => {
+        window.__gpu = running;
+        // if the chip is taken away (a phone does that to pages in the background) the SVG is back at once;
+        // the renderer is brought in again when the page is next looked at, a few times at most
+        if (running) running.gone.then(() => { window.__gpu = null; if (++tries < 4) whenSeen(begin); });
+      });
+    };
     if (typeof requestIdleCallback === 'function') requestIdleCallback(idle, { timeout: 2000 }); else setTimeout(idle, 200);
+  };
+  const whenSeen = (then: () => void): void => {
+    if (document.visibilityState === 'visible') { setTimeout(then, 1000); return; }
+    document.addEventListener('visibilitychange', () => whenSeen(then), { once: true });
   };
   if (document.readyState === 'complete') begin(); else window.addEventListener('load', begin);
 }

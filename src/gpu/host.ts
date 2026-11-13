@@ -53,5 +53,9 @@ export interface Running {
   snapshot(): Promise<string>;
   /** Resolves when no level is being waited for at the current zoom. */
   settled(): Promise<void>;
+  /** Resolves when the SVG drawing has been put away and the picture on screen is the renderer's alone. */
+  handed: Promise<void>;
+  /** Resolves if the chip is taken away: the renderer has then put the SVG drawing back and is gone. */
+  gone: Promise<void>;
   stop(): void;
 }
