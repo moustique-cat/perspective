@@ -1,0 +1,24 @@
+/* What a web page needs that the artboard did not. The design's own stylesheet is used as it
+   is (src/generated/design.css); these rules only adapt it from a fixed 1280 x 820 frame to a
+   browser window, and stage the first moments of loading. */
+
+:root{color-scheme:light}
+html,body{height:100%;background:#FFFFFF;overflow:hidden;overscroll-behavior:none}
+
+/* The artboard is 820 px tall; the page is as tall as the window. */
+.ink{height:100vh !important;height:100dvh !important}
+.rail-rng{height:calc(100% - 70px) !important}
+.rail-focus{height:calc(100% - 52px) !important}
+
+/* A window too short for the rail gets the design's own small-screen layout. This repeats
+   the body of its (max-width:759px) rule; tests/design.test.ts checks the two stay in step. */
+@media (max-height:559px){.rail{display:none !important}.bl{left:20px !important;right:20px !important;bottom:20px !important}.hdr{left:20px !important;top:20px !important}.cap-t{font-size:30px !important}.cap-p{font-size:17px !important} }
+
+/* First moments. Nothing shows until the start-up script has fitted the drawing to this
+   window; then the drawing shows at once and the words follow when their fonts are in. */
+.ink{visibility:hidden}
+.ready .ink{visibility:visible}
+.hdr,.rail,.bl{opacity:0}
+.fonts .hdr,.fonts .rail,.fonts .bl{opacity:1;transition:opacity 180ms ease}
+
+@media (prefers-reduced-motion:reduce){.fonts .hdr,.fonts .rail,.fonts .bl{transition:none} }
