@@ -8,12 +8,40 @@ Moustique at the centre. It is built from the unedited design in
 [`design/original/`](design/README.md): the drawing, the captions and the stylesheet are
 read out of that file on every build, and the tests hold the site to it.
 
+### Setting up on macOS or Linux
+
+You need Git and Node.js 22.12 or newer (`node --version` shows what you have).
+
+On macOS, with [Homebrew](https://brew.sh):
+
 ```bash
-npm ci                            # install the build and test tools
-npm run dev                       # work on it locally
+brew install node
+```
+
+On Linux, with [nvm](https://github.com/nvm-sh/nvm):
+
+```bash
+sudo apt install -y git curl   # Debian or Ubuntu; elsewhere, your own package manager
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.41.0/install.sh | bash
+# open a new terminal, then:
+nvm install 22
+```
+
+Then, on both:
+
+```bash
+git clone https://github.com/moustique-cat/perspective.git
+cd perspective
+npm ci        # install the build and test tools into the project folder
+npm run dev   # start the site, then open the address it prints
+```
+
+### The other commands
+
+```bash
 npm test                          # unit tests
 npm run build                     # build the site into dist/
-npx playwright install chromium   # once, for the browser tests
+npx playwright install chromium   # once, for the browser tests (on Linux, add --with-deps)
 npm run test:e2e                  # browser tests, against dist/
 npm run bench                     # speed report, against dist/
 ```
