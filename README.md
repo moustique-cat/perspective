@@ -51,16 +51,45 @@ npm run bench                     # speed report, against dist/
 ```
 
 - `npm test` runs the design's own script next to the site's code and requires every value
-  and every frame of motion to be equal.
-- `npm run test:e2e` opens the original artboard and the built site side by side in a browser
-  and compares them, structure and pixels, across the whole zoom.
-- `npm run bench` times a scripted zoom from proton to edge and the first moments of loading.
+  and every frame of motion to be equal. It also checks the renderer's arithmetic against
+  brute-force sampling.
+- `npm run test:e2e` runs three sets of browser tests. `design` opens the original artboard
+  and the built site side by side and compares them, structure and pixels, across the whole
+  zoom. `renderer` compares the renderer's picture with the SVG's picture of the same marks,
+  and checks the takeover. Both draw in software, so their pictures are the same on every
+  machine. `chip` runs on a real graphics chip and skips itself where there is none.
+  One set alone: `npm run test:e2e -- --project=design`.
+- `npm run bench` times a scripted zoom from proton to edge and the first moments of loading,
+  in software and, where the machine has one, on its graphics chip
+  (`npm run bench -- --window` flies in a real window).
 
 Options in the address: `?cm=60` (Moustique's length, 20 to 90), `?speed=2` (flight speed,
-0.2 to 3), `?ink=26304A` (ink colour) and `?hand=1` (hand-drawn line).
+0.2 to 3), `?ink=26304A` (ink colour) and `?hand=1` (hand-drawn line). `?original` shows the
+original SVG drawing, at the zoom the tab was at. `?bench` runs the speed report on the
+device in hand and shows it as text to copy.
+
+### How the drawing gets on screen
+
+The page arrives as one response with the first view already drawn as SVG, and stays usable
+as that SVG on any device. Once the whole drawing has arrived and the page is idle, a device
+with a graphics chip fetches a renderer written for this one look (`src/gpu/`): WebGPU where
+there is one, WebGL2 otherwise. It reads the marks out of the page's own SVG, so the two
+drawings have identical content, draws them over the SVG drawing, and takes over with a
+short fade. The labels, the Sun and the marker stay SVG, set by the browser. A device without
+a chip fetches nothing, has nothing added to its page, and keeps the SVG. `?gpu=webgl2`,
+`?gpu=webgpu` and `?gpu=svg` choose outright, software rendering included: that is how the
+tests ask for a renderer.
+
+A browser smooths text differently once it sits over a canvas. So a device that will get the
+renderer is given a white sheet under everything straight away, before the words are shown:
+they are then set the same way from the moment they appear, and do not change when the
+canvas arrives.
 
 Pushing to `main` publishes to GitHub Pages once the tests pass
-(`.github/workflows/site.yml`). Third-party fonts and tools are listed in
+(`.github/workflows/site.yml`). To try a branch on real devices before it is merged, push it
+to `dev`, which is published beside the site under `/preview/`:
+`git push --force origin HEAD:dev`. That branch is only a place to show one: it is overwritten
+each time and not tested, since pull requests are. Third-party fonts and tools are listed in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Licence

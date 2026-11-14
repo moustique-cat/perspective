@@ -11,7 +11,7 @@
   "scripts": {
     "design": "node scripts/extract-design.mjs",
     "dev": "npm run design && vite",
-    "build": "npm run design && tsc --noEmit && vite build",
+    "build": "npm run design && tsc --noEmit && node scripts/build.mjs",
     "preview": "vite preview",
     "check": "npm run design && tsc --noEmit",
     "test": "npm run design && vitest run",

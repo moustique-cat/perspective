@@ -5,3 +5,4 @@ test-results/
 playwright-report/
 .reference/
 *.log
+.DS_Store

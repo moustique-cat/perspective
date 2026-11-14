@@ -22,6 +22,8 @@ interface Slot {
   parts: string[];
   paths: string[][];
   last: string | null;
+  /** Not written while the renderer draws this part of the page itself. */
+  off: boolean;
 }
 
 export interface Page {
@@ -29,6 +31,8 @@ export interface Page {
   /** Elements that carry event markers, with their parsed "type:handler[:argument]" entries. */
   events: { el: Element; type: string; handler: string; arg: string | undefined }[];
   layer(name: string): Element | null;
+  /** Stops writing values under an element (the renderer has taken that part over); null resumes everywhere. */
+  mute(element: Element | null): void;
 }
 
 export function mountPage(root: Element, bindings: Binding[]): Page {
@@ -54,7 +58,7 @@ export function mountPage(root: Element, bindings: Binding[]): Page {
     }
     const paths: string[][] = [];
     for (let k = 1; k < parts.length; k += 2) paths.push(parts[k].split('.'));
-    return { kind, el, name: String(key), node, parts, paths, last: null };
+    return { kind, el, name: String(key), node, parts, paths, last: null, off: false };
   });
 
   const events: Page['events'] = [];
@@ -68,6 +72,7 @@ export function mountPage(root: Element, bindings: Binding[]): Page {
   function apply(frame: Frame): void {
     for (let n = 0; n < slots.length; n++) {
       const s = slots[n];
+      if (s.off) continue;
       let text = s.parts[0];
       for (let k = 0; k < s.paths.length; k++) {
         const path = s.paths[k];
@@ -88,5 +93,13 @@ export function mountPage(root: Element, bindings: Binding[]): Page {
     apply,
     events,
     layer: (name) => root.querySelector(`[data-layer="${name}"]`),
+    mute(element) {
+      for (const s of slots) {
+        const off = !!element && element.contains(s.el);
+        // what was skipped has to be written afresh when writing resumes
+        if (s.off && !off) s.last = null;
+        s.off = off;
+      }
+    },
   };
 }
