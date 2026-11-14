@@ -187,7 +187,7 @@ if (chip) {
 if (only === 'software') {
   // not asked for
 } else if (!chip || /swiftshader|llvmpipe|software|none/i.test(drawsWith)) {
-  console.log('\nNo graphics chip on this machine (' + drawsWith + '): the figures above are all it can say.');
+  console.log('\nNo graphics chip on this machine (' + drawsWith + ')' + (only === 'chip' ? '.' : ': the figures above are all it can say.'));
 } else {
   console.log(`\nOn the graphics chip: ${drawsWith}, ${inWindow ? 'in a window' : 'headless'}.\n`);
   console.log(FLIGHT_HEAD);

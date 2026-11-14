@@ -62,10 +62,14 @@ jobs:
         run: npm run test:e2e
 
       - name: Speed report (no graphics chip here, so its figures are a floor and a regression check)
+        id: bench
         shell: bash
+        run: npm run bench -- --check | tee bench.md
+
+      - name: Put the speed report into the run's summary
+        if: ${{ !cancelled() }}
         run: |
-          npm run bench -- --check | tee bench.md
-          { echo '## Speed report: Linux, no graphics chip'; echo; sed -n '/^Machine:/,$p' bench.md; } >> "$GITHUB_STEP_SUMMARY"
+          node scripts/ci-report.mjs --from=Machine: --outcome=${{ steps.bench.outcome }} 'Speed report: Linux, no graphics chip' bench.md
 
       - name: Keep the test output when something failed
         if: failure()
@@ -76,12 +80,13 @@ jobs:
           retention-days: 14
 
   mac:
-    # GitHub's Macs: the one place in CI where the browser may reach a graphics chip.
-    # What it finds goes into the run's summary; it does not gate publishing.
+    # GitHub's Macs: the one place in CI where the browser may reach a graphics chip (a
+    # virtual one: these are virtual machines, and slow at it). What it finds goes into the
+    # run's summary and into two notices on the run; it does not gate publishing.
     name: On a Mac
     if: github.ref != 'refs/heads/dev'
     runs-on: macos-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     continue-on-error: true
     concurrency:
       group: mac-${{ github.ref }}
@@ -103,16 +108,23 @@ jobs:
         run: npx playwright install chromium
 
       - name: The renderer on the graphics chip, if the browser can reach one
+        id: chip
         shell: bash
-        run: |
-          npm run test:e2e -- --project=chip | tee chip.txt
-          { echo '## On the chip: macOS'; echo; echo '```'; tail -n 90 chip.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+        run: npm run test:e2e -- --project=chip | tee chip.txt
 
-      - name: Speed report
+      # Only the half on the chip: the half in software is the Linux job's. The whole report
+      # took 32 minutes here. Stopped after 30, it is reported as far as it got.
+      - name: Speed report, on the chip
+        id: bench
+        timeout-minutes: 30
         shell: bash
+        run: npm run bench -- --chip | tee bench.md
+
+      - name: Put what was found into the run's summary
+        if: ${{ !cancelled() }}
         run: |
-          npm run bench | tee bench.md
-          { echo '## Speed report: macOS'; echo; sed -n '/^Machine:/,$p' bench.md; } >> "$GITHUB_STEP_SUMMARY"
+          node scripts/ci-report.mjs --notice --tail=70 --outcome=${{ steps.chip.outcome }} 'On the chip: macOS' chip.txt
+          node scripts/ci-report.mjs --notice --from=Machine: --outcome=${{ steps.bench.outcome }} 'Speed report: macOS' bench.md
 
   assemble:
     # GitHub Pages holds one site per repository, so every publish carries both: the site
