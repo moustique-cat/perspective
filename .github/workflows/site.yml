@@ -112,8 +112,8 @@ jobs:
         shell: bash
         run: npm run test:e2e -- --project=chip | tee chip.txt
 
-      # Only the half on the chip: the half in software is the Linux job's. The whole report
-      # took 32 minutes here. Stopped after 30, it is reported as far as it got.
+      # Only the half on the chip: the half in software is the Linux job's. It takes 23 minutes
+      # here (the whole report took 33). Stopped after 30, it is reported as far as it got.
       - name: Speed report, on the chip
         id: bench
         timeout-minutes: 30
@@ -123,8 +123,8 @@ jobs:
       - name: Put what was found into the run's summary
         if: ${{ !cancelled() }}
         run: |
-          node scripts/ci-report.mjs --notice --tail=70 --outcome=${{ steps.chip.outcome }} 'On the chip: macOS' chip.txt
-          node scripts/ci-report.mjs --notice --from=Machine: --outcome=${{ steps.bench.outcome }} 'Speed report: macOS' bench.md
+          node scripts/ci-report.mjs --notice --notice-plain --tail=70 --outcome=${{ steps.chip.outcome }} 'On the chip: macOS' chip.txt
+          node scripts/ci-report.mjs --notice --notice-columns=12 --from=Machine: --outcome=${{ steps.bench.outcome }} 'Speed report: macOS' bench.md
 
   assemble:
     # GitHub Pages holds one site per repository, so every publish carries both: the site
