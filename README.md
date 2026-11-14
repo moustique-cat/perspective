@@ -76,17 +76,20 @@ with a graphics chip fetches a renderer written for this one look (`src/gpu/`): 
 there is one, WebGL2 otherwise. It reads the marks out of the page's own SVG, so the two
 drawings have identical content, draws them over the SVG drawing, and takes over with a
 short fade. The labels, the Sun and the marker stay SVG, set by the browser. A device without
-a chip fetches nothing, has nothing added to its page, and keeps the SVG.
+a chip fetches nothing, has nothing added to its page, and keeps the SVG. `?gpu=webgl2`,
+`?gpu=webgpu` and `?gpu=svg` choose outright, software rendering included: that is how the
+tests ask for a renderer.
 
 A browser smooths text differently once it sits over a canvas. So a device that will get the
 renderer is given a white sheet under everything straight away, before the words are shown:
 they are then set the same way from the moment they appear, and do not change when the
-canvas arrives. `?gpu=webgl2`, `?gpu=webgpu` and `?gpu=svg` choose
-outright, software rendering included: that is how the tests ask for a renderer.
+canvas arrives.
 
 Pushing to `main` publishes to GitHub Pages once the tests pass
-(`.github/workflows/site.yml`). While a milestone is in the works, its branch is published
-beside the site under `/preview/`. Third-party fonts and tools are listed in
+(`.github/workflows/site.yml`). To try a branch on real devices before it is merged, push it
+to `dev`, which is published beside the site under `/preview/`:
+`git push --force origin HEAD:dev`. That branch is only a place to show one: it is overwritten
+each time and not tested, since pull requests are. Third-party fonts and tools are listed in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Licence

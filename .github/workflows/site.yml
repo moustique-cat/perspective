@@ -1,13 +1,18 @@
 name: Site
 
-# Tests every push and pull request. Publishes to GitHub Pages from main and, while a
-# milestone is in the works, publishes that milestone's branch beside it under /preview/,
-# so it can be tried on real devices before it is merged.
+# Tests every pull request and every push to main. Publishes to GitHub Pages from main.
+#
+# Whatever is pushed to the branch "dev" is published beside the site under /preview/, to be
+# tried on real devices before it is merged:
+#
+#     git push --force origin HEAD:dev
+#
+# dev is a place to put a branch on show, not a branch to work on: it is overwritten each
+# time, and it is not tested here (the branch's own pull request is).
 
 on:
   push:
-    # main, and the branch named in PREVIEW_BRANCH below
-    branches: [main, moustiques-per-second]
+    branches: [main, dev]
   pull_request:
   workflow_dispatch:
 
@@ -15,17 +20,16 @@ permissions:
   contents: read
 
 env:
-  # The branch published under /preview/. It must also be allowed to deploy in
-  # Settings > Environments > github-pages. Once the branch is deleted, the preview is gone
+  # The branch published under /preview/. It has to be allowed to deploy, once, in
+  # Settings > Environments > github-pages. If the branch is deleted, the preview is gone
   # from the site at the next publish.
-  PREVIEW_BRANCH: moustiques-per-second
+  PREVIEW_BRANCH: dev
 
 jobs:
   test:
     name: Build and test
-    # The preview branch is tested when it is pushed; its pull request would only test the
-    # same commit a second time.
-    if: github.event_name != 'pull_request' || github.head_ref != 'moustiques-per-second'
+    # not for the preview: what is put on show there is tested by its own pull request
+    if: github.ref != 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -75,7 +79,7 @@ jobs:
     # GitHub's Macs: the one place in CI where the browser may reach a graphics chip.
     # What it finds goes into the run's summary; it does not gate publishing.
     name: On a Mac
-    if: github.event_name != 'pull_request' || github.head_ref != 'moustiques-per-second'
+    if: github.ref != 'refs/heads/dev'
     runs-on: macos-latest
     timeout-minutes: 40
     continue-on-error: true
@@ -112,9 +116,10 @@ jobs:
 
   assemble:
     # GitHub Pages holds one site per repository, so every publish carries both: the site
-    # built from main at the root, unchanged, and the milestone branch under /preview/.
+    # built from main at the root, unchanged, and the dev branch under /preview/.
+    # From main, only once the tests have passed. From dev, straight away: its tests are skipped.
     name: Assemble the site
-    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/moustiques-per-second')
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && (github.ref == 'refs/heads/dev' || (github.ref == 'refs/heads/main' && needs.test.result == 'success')) }}
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -128,7 +133,7 @@ jobs:
       - name: Is there a branch to preview?
         id: preview
         run: |
-          if git -C main ls-remote --exit-code --heads origin "$PREVIEW_BRANCH" > /dev/null; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+          if git -C main ls-remote --exit-code origin "refs/heads/$PREVIEW_BRANCH" > /dev/null; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
 
       - name: The preview, from its branch
         if: steps.preview.outputs.exists == 'true'
@@ -149,6 +154,9 @@ jobs:
 
       - name: Build the preview into /preview/
         if: steps.preview.outputs.exists == 'true'
+        # From main, a preview that no longer builds is left out and the site is published
+        # without it. From dev, it stops the run, and the site stays as it was.
+        continue-on-error: ${{ github.ref == 'refs/heads/main' }}
         working-directory: preview
         run: |
           npm ci
@@ -166,9 +174,9 @@ jobs:
   deploy:
     name: Publish
     needs: assemble
-    # A preview that cannot be published (its branch not yet allowed in the environment) does
-    # not make the run fail; publishing from main still must succeed.
-    continue-on-error: ${{ github.ref != 'refs/heads/main' }}
+    # Said outright: left to itself, a job is skipped when any job further up its chain was
+    # skipped, and for dev the tests are.
+    if: ${{ !cancelled() && needs.assemble.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
