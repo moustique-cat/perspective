@@ -23,6 +23,9 @@ env:
 jobs:
   test:
     name: Build and test
+    # The preview branch is tested when it is pushed; its pull request would only test the
+    # same commit a second time.
+    if: github.event_name != 'pull_request' || github.head_ref != 'moustiques-per-second'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -72,6 +75,7 @@ jobs:
     # GitHub's Macs: the one place in CI where the browser may reach a graphics chip.
     # What it finds goes into the run's summary; it does not gate publishing.
     name: On a Mac
+    if: github.event_name != 'pull_request' || github.head_ref != 'moustiques-per-second'
     runs-on: macos-latest
     timeout-minutes: 40
     continue-on-error: true

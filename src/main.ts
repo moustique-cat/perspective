@@ -36,7 +36,8 @@ const original = /[?&]original(=|&|$)/.test(location.search);
 
 const doc = document.documentElement;
 
-function start(): void {
+/** Resolves when it is settled what the words will be set over (see arrive). */
+function start(): Promise<void> {
   const root = document.querySelector<HTMLElement>('.ink');
   if (!root) throw new Error('page markup missing');
   const page = mountPage(root, bindings as Binding[]);
@@ -142,7 +143,7 @@ function start(): void {
     (import.meta.env.DEV ? import('./bench') : import(/* @vite-ignore */ new URL(__GPU_FILES__!.bench, document.baseURI).href)).then((m) => m.run(ZMIN, ZMAX));
   }
 
-  arrive({
+  return arrive({
     root, svg: root.querySelector('svg')!, props, reduced, journey, sheets: sheets(),
     panAt: (z) => panAt(z, props),
     onFrame: (callback) => { also = callback; },
@@ -161,13 +162,13 @@ function start(): void {
  * ?original keeps the SVG, as does ?hand (the pencil line is an SVG filter).
  * ?gpu=webgl2, ?gpu=webgpu and ?gpu=svg choose outright, software rendering included: for tests.
  */
-function arrive(host: Host): void {
+function arrive(host: Host): Promise<void> {
   const asked = /[?&]gpu=(\w+)/.exec(location.search);
   const want = asked ? asked[1] : '';
   // ?marks=100000: the speed report's load test (src/gpu/renderer.ts)
   const marks = /[?&]marks=(\d+)/.exec(location.search);
   const fault = window.__fault || (marks ? { extra: +marks[1] } : undefined);
-  if (original || host.props.handDrawn || want === 'svg') { window.__gpu = null; return; }
+  if (original || host.props.handDrawn || want === 'svg') { window.__gpu = null; return Promise.resolve(); }
   const load = async (kind: 'webgpu' | 'webgl2', options: StartOptions): Promise<Running | null> => {
     let renderer: { start: Start };
     if (import.meta.env.DEV) {
@@ -177,13 +178,19 @@ function arrive(host: Host): void {
     }
     return renderer.start(host, options);
   };
+  // What does this device draw with? WebGL can tell without asking for WebGPU, which logs a
+  // warning where there is none. The canvas is not in the page: next to the SVG it would
+  // change how the browser draws the SVG.
+  let canvas: HTMLCanvasElement | null = null, gl: WebGL2RenderingContext | null = null;
+  const look = (): boolean => {
+    canvas = document.createElement('canvas');
+    gl = canvas.getContext('webgl2', GL_ATTRIBUTES);
+    return !!want || (!!gl && !isSoftware(rendererOf(gl)));
+  };
   const go = async (): Promise<Running | null> => {
-    // What does this device draw with? WebGL can tell without asking for WebGPU, which logs a
-    // warning where there is none. The canvas is not in the page: next to the SVG it would
-    // change how the browser draws the SVG.
-    const canvas = document.createElement('canvas');
-    const gl = canvas.getContext('webgl2', GL_ATTRIBUTES);
-    if (!want && !(gl && !isSoftware(rendererOf(gl)))) return null;
+    if (!canvas && !look()) return null;
+    const mine = canvas!, context = gl;
+    canvas = null;
     let running: Running | null = null;
     const gpu = (navigator as Navigator & { gpu?: GPU }).gpu;
     if (want !== 'webgl2' && gpu) {
@@ -192,10 +199,10 @@ function arrive(host: Host): void {
     }
     if (running) {
       // the WebGL context was only made to find out
-      const ext = gl && gl.getExtension('WEBGL_lose_context');
+      const ext = context && context.getExtension('WEBGL_lose_context');
       if (ext) ext.loseContext();
-    } else if (gl && want !== 'webgpu') {
-      running = await load('webgl2', { force: !!want, canvas, fault });
+    } else if (context && want !== 'webgpu') {
+      running = await load('webgl2', { force: !!want, canvas: mine, fault });
     }
     return running;
   };
@@ -215,7 +222,27 @@ function arrive(host: Host): void {
     if (document.visibilityState === 'visible') { setTimeout(then, 1000); return; }
     document.addEventListener('visibilitychange', () => whenSeen(then), { once: true });
   };
-  if (document.readyState === 'complete') begin(); else window.addEventListener('load', begin);
+  // Settled at once, before the words are shown: will a canvas come to lie under them? A browser
+  // smooths text differently once it sits over a canvas (on Windows and Linux, in grey rather than
+  // with coloured fringes). So a device that will get the renderer is given a white sheet under
+  // everything now: the words are then set over a layer of their own from the moment they appear,
+  // and do not change in front of the reader when the canvas arrives.
+  return new Promise((settled) => setTimeout(() => {
+    if (look()) {
+      const sheet = document.createElement('div');
+      sheet.setAttribute('aria-hidden', 'true');
+      sheet.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;background:#FFFFFF;will-change:transform;pointer-events:none';
+      host.root.insertBefore(sheet, host.root.firstChild);
+      if (document.readyState === 'complete') begin(); else window.addEventListener('load', begin);
+    } else {
+      // no graphics chip: the SVG stays, and nothing was added to the page
+      const ext = gl && (gl as WebGL2RenderingContext).getExtension('WEBGL_lose_context');
+      if (ext) ext.loseContext();
+      canvas = null;
+      window.__gpu = null;
+    }
+    settled();
+  }, 0));
 }
 
 function showWords(): void {
@@ -230,8 +257,9 @@ function showWords(): void {
   }
 }
 
+let settled: Promise<void> = Promise.resolve();
 try {
-  start();
+  settled = start();
 } finally {
   // The drawing shows at once. The words wait a moment for their fonts, so they appear
   // already set in the right type rather than changing face in front of the reader.
@@ -239,8 +267,8 @@ try {
   const fonts = document.fonts;
   if (fonts && typeof fonts.load === 'function') {
     const wanted = ["400 13px Inter", "500 14px Inter", "600 13px Inter", "400 34px 'EB Garamond'"].map((f) => fonts.load(f));
-    Promise.race([Promise.all(wanted), new Promise((done) => setTimeout(done, 400))]).then(showWords, showWords);
+    Promise.race([Promise.all(wanted), new Promise((done) => setTimeout(done, 400))]).then(() => settled).then(showWords, showWords);
   } else {
-    showWords();
+    settled.then(showWords, showWords);
   }
 }

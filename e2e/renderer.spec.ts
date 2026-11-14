@@ -75,6 +75,16 @@ for (const backend of ['webgl2', 'webgpu']) {
 const frames = (page: Page, n = 2) => page.evaluate((count) => new Promise<void>((done) => { const step = (left: number): void => { if (left) requestAnimationFrame(() => step(left - 1)); else done(); }; step(count); }), n);
 const fontsIn = (page: Page) => page.evaluate(() => new Promise<void>((done) => { const check = () => (document.documentElement.classList.contains('fonts') ? done() : setTimeout(check, 10)); check(); }));
 
+/**
+ * The site as it is just before the renderer arrives: it has found a chip (here: was told to
+ * use the renderer) and is waiting for the renderer's file, which never comes.
+ */
+async function openWaiting(page: Page): Promise<void> {
+  await page.route('**/gpu/webgl2-*.js', () => { /* never answered */ });
+  await page.goto('/?gpu=webgl2');
+  await fontsIn(page);
+}
+
 test('both backends draw the same picture', async ({ browser }) => {
   const context = await browser.newContext({ viewport: { width: 1280, height: 820 }, reducedMotion: 'reduce' });
   const gl = await context.newPage(), gpu = await context.newPage();
@@ -105,18 +115,31 @@ test('the takeover: nothing moves when the canvas goes in, then one even fade', 
     await frames(page);
     return PNG.sync.read(await page.screenshot());
   };
+  /** Pixels more than 4 levels apart, by part of the page: the words (header, caption, rail) or the drawing. */
+  const byZone = (a: PNG, b: PNG): string => {
+    const zones: Record<string, [number, number]> = { header: [0, 0], caption: [0, 0], rail: [0, 0], drawing: [0, 0] };
+    for (let y = 0; y < a.height; y++) for (let x = 0; x < a.width; x++) {
+      const d = Math.abs(a.data[4 * (y * a.width + x)] - b.data[4 * (y * a.width + x)]);
+      if (d <= 4) continue;
+      const zone = x >= 1032 ? 'rail' : y < 110 && x < 620 ? 'header' : y > 590 && x < 900 ? 'caption' : 'drawing';
+      zones[zone][0]++;
+      zones[zone][1] = Math.max(zones[zone][1], d);
+    }
+    return Object.entries(zones).map(([name, [count, worst]]) => `${name}: ${count} px, worst ${worst}`).join('; ');
+  };
   for (const z of [0, 13.2, -3]) {
-    const svg = await context.newPage(), page = await context.newPage();
-    // both arrive at the zoom as the site itself would: from the other drawing, through the tab's memory
-    for (const [p, original] of [[svg, true], [page, false]] as const) await p.addInitScript(({ zoom, o }) => sessionStorage.setItem('perspective', JSON.stringify({ z: zoom, o: !o })), { zoom: z, o: original });
+    const svg = await context.newPage(), waiting = await context.newPage(), page = await context.newPage();
+    // all three arrive at the zoom as the site itself would: from the other drawing, through the tab's memory
+    for (const [p, original] of [[svg, true], [waiting, false], [page, false]] as const) await p.addInitScript(({ zoom, o }) => sessionStorage.setItem('perspective', JSON.stringify({ z: zoom, o: !o })), { zoom: z, o: original });
     await svg.goto('/?original');
     await fontsIn(svg);
-    await svg.waitForTimeout(400);
+    await openWaiting(waiting);
     expect((await openRenderer(page, '?gpu=webgl2'))!.kind).toBe('webgl2');
     await fontsIn(page);
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(500);
     expect(await page.evaluate(() => window.__perspective!.z)).toBe(z);
-    const before = PNG.sync.read(await svg.screenshot());
+    expect(await waiting.evaluate(() => [window.__perspective!.z, window.__gpu === undefined])).toEqual([z, true]);
+    const original = PNG.sync.read(await svg.screenshot()), before = PNG.sync.read(await waiting.screenshot());
     const start = await fadeTo(page, 0), middle = await fadeTo(page, 130), end = await fadeTo(page, 259.9);
     await page.evaluate(() => { (window as unknown as { __fade: Animation }).__fade.finish(); return window.__gpu!.handed; });
     await frames(page);
@@ -130,23 +153,15 @@ test('the takeover: nothing moves when the canvas goes in, then one even fade', 
     // 3. the fade ends on the picture that stays
     const leaving = measure(end, after);
     const whole = measure(before, after);
-    console.log(`  zoom ${z}: canvas going in changes ${entering.over16 ? 'MORE THAN 16 levels somewhere' : `at most ${entering.worst} of 255 levels`}; middle of the fade within ${uneven} of the average of its ends; last step ${leaving.worst}; the whole change: worst pixel ${whole.worst}, ink ${(100 * (whole.inkGpu / whole.inkSvg - 1)).toFixed(2)} %`);
-    if (entering.worst > 4 || uneven > 2) fs.writeFileSync(info.outputPath(`takeover-z${z}.png`), measure(before, start).picture());
-    // where on the page, if anywhere: the words (header, caption, rail) or the drawing
-    const zones: Record<string, [number, number]> = { header: [0, 0], caption: [0, 0], rail: [0, 0], drawing: [0, 0] };
-    for (let y = 0; y < before.height; y++) for (let x = 0; x < before.width; x++) {
-      const d = Math.abs(before.data[4 * (y * before.width + x)] - start.data[4 * (y * before.width + x)]);
-      if (d <= 4) continue;
-      const zone = x >= 1032 ? 'rail' : y < 110 && x < 620 ? 'header' : y > 590 && x < 900 ? 'caption' : 'drawing';
-      zones[zone][0]++;
-      zones[zone][1] = Math.max(zones[zone][1], d);
-    }
-    const where = Object.entries(zones).map(([name, [count, worst]]) => `${name}: ${count} px, worst ${worst}`).join('; ');
-    expect(entering.worst, `the page changed when the canvas went in, at zoom ${z} (pixels more than 4 levels off: ${where})`).toBeLessThanOrEqual(4);
+    console.log(`  zoom ${z}: canvas going in changes at most ${entering.worst} of 255 levels; middle of the fade within ${uneven} of the average of its ends; last step ${leaving.worst}; the whole change: worst pixel ${whole.worst}, ink ${(100 * (whole.inkGpu / whole.inkSvg - 1)).toFixed(2)} %`);
+    // not a step in time, but a standing difference: the page waiting for its renderer against the page that keeps the SVG.
+    // Where the browser smooths text in colour, words over the sheet are smoothed in grey instead.
+    console.log(`  zoom ${z}: the page before the renderer arrives, against ?original (pixels more than 4 levels apart): ${byZone(original, before)}`);
+    if (entering.worst > 4 || uneven > 2) fs.writeFileSync(info.outputPath(`takeover-z${z}.png`), entering.picture());
+    expect(entering.worst, `the page changed when the canvas went in, at zoom ${z} (pixels more than 4 levels off: ${byZone(before, start)})`).toBeLessThanOrEqual(4);
     expect(uneven, 'the fade is not an even blend').toBeLessThanOrEqual(2);
     expect(leaving.worst, 'the fade does not end on the final picture').toBeLessThanOrEqual(2);
-    await svg.close();
-    await page.close();
+    for (const p of [svg, waiting, page]) await p.close();
   }
   await context.close();
 });
@@ -174,10 +189,10 @@ test('after the takeover: the canvas is what is on screen, the SVG drawing rests
       // the layer's values are no longer written: it still says what it said at the takeover
       layer: layer.getAttribute('display'),
       label: [label.getAttribute('display'), Number(label.getAttribute('x')) !== 0, !drawing.parentElement!.contains(label)],
-      order: Array.from(document.querySelector('.ink')!.children).slice(0, 3).map((e) => e.tagName.toLowerCase()),
+      order: Array.from(document.querySelector('.ink')!.children).slice(0, 4).map((e) => e.tagName.toLowerCase()),
     };
   });
-  expect(state).toEqual({ canvas: [2560, 1640, 1280, 820], drawing: 'none', layer: 'none', label: ['inline', true, true], order: ['svg', 'canvas', 'svg'] });
+  expect(state).toEqual({ canvas: [2560, 1640, 1280, 820], drawing: 'none', layer: 'none', label: ['inline', true, true], order: ['div', 'svg', 'canvas', 'svg'] });
 
   // what the page shows where the drawing is, is exactly what the chip drew
   await page.addStyleTag({ content: '.hdr,.rail,.bl,.ink>canvas~svg{display:none !important}' });
@@ -195,13 +210,13 @@ test('after the takeover: the canvas is what is on screen, the SVG drawing rests
 
 test('if the chip is taken away, the SVG is back at once, exactly as it was; the renderer returns later', async ({ browser }) => {
   const context = await browser.newContext({ viewport: { width: 1280, height: 820 }, reducedMotion: 'reduce' });
-  const svg = await context.newPage(), page = await context.newPage();
-  await svg.goto('/?original');
-  await fontsIn(svg);
+  // "as it was": the same page before its renderer arrived
+  const waiting = await context.newPage(), page = await context.newPage();
+  await openWaiting(waiting);
   expect((await openRenderer(page, '?gpu=webgl2'))!.kind).toBe('webgl2');
   await page.evaluate(() => window.__gpu!.handed);
   await fontsIn(page);
-  await Promise.all([setZoom(svg, 2.5), setZoom(page, 2.5)]);
+  await Promise.all([setZoom(waiting, 2.5), setZoom(page, 2.5)]);
   await page.evaluate(() => new Promise<void>((done) => {
     const running = window.__gpu!;
     document.querySelector<HTMLCanvasElement>('.ink > canvas')!.getContext('webgl2')!.getExtension('WEBGL_lose_context')!.loseContext();
@@ -209,11 +224,11 @@ test('if the chip is taken away, the SVG is back at once, exactly as it was; the
   }));
   await frames(page);
   expect(await page.evaluate(() => [window.__gpu, document.querySelectorAll('.ink canvas').length, document.querySelectorAll('.ink > svg').length])).toEqual([null, 0, 1]);
-  // the same page as one that never left the SVG: structure, then picture
-  expect((await describeTree(page)).join('\n')).toBe((await describeTree(svg)).join('\n'));
-  await Promise.all([setZoom(svg, 6), setZoom(page, 6)]);
-  expect((await describeTree(page)).join('\n')).toBe((await describeTree(svg)).join('\n'));
-  expect(pixelDelta(await svg.screenshot(), await page.screenshot()).differing).toBe(0);
+  // the same page as one whose renderer never came: structure, then picture
+  expect((await describeTree(page)).join('\n')).toBe((await describeTree(waiting)).join('\n'));
+  await Promise.all([setZoom(waiting, 6), setZoom(page, 6)]);
+  expect((await describeTree(page)).join('\n')).toBe((await describeTree(waiting)).join('\n'));
+  expect(pixelDelta(await waiting.screenshot(), await page.screenshot()).differing).toBe(0);
   // and the renderer comes back
   await page.waitForFunction(() => !!window.__gpu, null, { timeout: 15_000 });
   await page.evaluate(() => window.__gpu!.handed);
@@ -229,7 +244,8 @@ test('?original and ?hand keep the SVG and fetch no renderer; the zoom carries o
   for (const query of ['?original', '?hand=1', '?gpu=svg']) {
     expect(await openRenderer(page, query), query).toBeNull();
     await page.waitForTimeout(300);
-    expect(await page.evaluate(() => document.querySelectorAll('canvas').length), query).toBe(0);
+    // no canvas, and no sheet under the words either: the page is the milestone 1 page
+    expect(await page.evaluate(() => [document.querySelectorAll('canvas').length, document.querySelector('.ink')!.firstElementChild!.tagName]), query).toEqual([0, 'svg']);
   }
   expect(requests.filter((r) => r.startsWith('/gpu/'))).toEqual([]);
 

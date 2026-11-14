@@ -74,9 +74,14 @@ The page arrives as one response with the first view already drawn as SVG, and s
 as that SVG on any device. Once the whole drawing has arrived and the page is idle, a device
 with a graphics chip fetches a renderer written for this one look (`src/gpu/`): WebGPU where
 there is one, WebGL2 otherwise. It reads the marks out of the page's own SVG, so the two
-drawings have identical content, draws them behind the SVG, and takes over with a short
-fade. The labels, the Sun and the marker stay SVG, set by the browser. A device without a
-chip fetches nothing and keeps the SVG. `?gpu=webgl2`, `?gpu=webgpu` and `?gpu=svg` choose
+drawings have identical content, draws them over the SVG drawing, and takes over with a
+short fade. The labels, the Sun and the marker stay SVG, set by the browser. A device without
+a chip fetches nothing, has nothing added to its page, and keeps the SVG.
+
+A browser smooths text differently once it sits over a canvas. So a device that will get the
+renderer is given a white sheet under everything straight away, before the words are shown:
+they are then set the same way from the moment they appear, and do not change when the
+canvas arrives. `?gpu=webgl2`, `?gpu=webgpu` and `?gpu=svg` choose
 outright, software rendering included: that is how the tests ask for a renderer.
 
 Pushing to `main` publishes to GitHub Pages once the tests pass
